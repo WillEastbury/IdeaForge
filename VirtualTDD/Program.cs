@@ -1511,10 +1511,13 @@ public static class IdeaForgeServer
     public static void Start()
     {
         AuthManager.LoadShareTokens();
+        var port = Environment.GetEnvironmentVariable("PORT")
+            ?? Environment.GetEnvironmentVariable("WEBSITES_PORT")
+            ?? "5005";
         _listener = new HttpListener();
-        _listener.Prefixes.Add("http://+:5005/");
+        _listener.Prefixes.Add($"http://+:{port}/");
         _listener.Start();
-        Console.WriteLine("  → IdeaForge UI at http://localhost:5005 (all interfaces)");
+        Console.WriteLine($"  → IdeaForge UI at http://localhost:{port} (all interfaces)");
         Console.WriteLine($"  → Data directory: {AuthManager.DataRoot}");
         if (AuthManager.IsConfigured)
         {
@@ -3864,8 +3867,8 @@ public class Program
         // Start web server (user init happens on first request per-user)
         IdeaForgeServer.Start();
 
-        Console.WriteLine("\n🌐 Open http://localhost:5005 in your browser");
-        Console.WriteLine("   Sign in with Google to access your workspace.");
+        Console.WriteLine("\n🌐 Open the URL shown above in your browser");
+        Console.WriteLine("   Sign in to access your workspace.");
         Console.WriteLine("   Press Ctrl+C to exit.\n");
 
         // Keep alive
