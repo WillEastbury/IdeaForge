@@ -45,11 +45,31 @@ public class SystemState
     public Dictionary<string, string> Dataflow { get; set; } = new();
     public Dictionary<string, string> Frameworks { get; set; } = new();
     public Dictionary<string, string> Language { get; set; } = new();
+    public Dictionary<string, string> Deployment { get; set; } = new();
 
     // 3. Behaviour
     public Dictionary<string, string> Features { get; set; } = new();
     public Dictionary<string, string> Stories { get; set; } = new();
     public Dictionary<string, string> NFR { get; set; } = new();
+
+    // Quality sliders (0–100) — influence code shape via LLM prompts
+    public Dictionary<string, int> Sliders { get; set; } = DefaultSliders();
+
+    public static Dictionary<string, int> DefaultSliders() => new()
+    {
+        ["performance"]    = 50,
+        ["latency"]        = 50,
+        ["ui-polish"]      = 50,
+        ["simplicity"]     = 70,
+        ["readability"]    = 70,
+        ["conciseness"]    = 50,
+        ["security"]       = 50,
+        ["test-coverage"]  = 50,
+        ["error-handling"] = 50,
+        ["abstraction"]    = 40,
+        ["layering"]       = 50,
+        ["solid"]          = 60,
+    };
 
     // 4. Forge (LLM-generated)
     public Dictionary<string, string> Interfaces { get; set; } = new();
@@ -73,9 +93,11 @@ public class SystemState
             Dataflow = new(Dataflow),
             Frameworks = new(Frameworks),
             Language = new(Language),
+            Deployment = new(Deployment),
             Features = new(Features),
             Stories = new(Stories),
             NFR = new(NFR),
+            Sliders = new(Sliders),
             Interfaces = new(Interfaces),
             UnitTests = new(UnitTests),
             Code = new(Code),
@@ -169,10 +191,15 @@ public static class PromptBuilder
         Append(sb, "DATAFLOW",     state.Dataflow);
         Append(sb, "FRAMEWORKS",   state.Frameworks);
         Append(sb, "LANGUAGE",     state.Language);
+        Append(sb, "DEPLOYMENT",   state.Deployment);
         sb.AppendLine("## 3 · Behaviour");
         Append(sb, "FEATURES",     state.Features);
         Append(sb, "STORIES",      state.Stories);
         Append(sb, "NFR",          state.NFR);
+        sb.AppendLine("## Quality Sliders (0 = low priority, 100 = critical)");
+        foreach (var (k, v) in state.Sliders)
+            sb.AppendLine($"- {k}: {v}/100");
+        sb.AppendLine();
         return sb.ToString();
     }
 
@@ -370,7 +397,7 @@ public static class DiffUtil
 
 public static class Generator
 {
-    private const string SystemPrompt =
+    private const string SystemPromptBase =
         """
         You are a code generation engine for a virtual TDD system.
         You output ONLY raw C# code. No markdown fences, no explanations.
@@ -378,6 +405,48 @@ public static class Generator
         Do NOT produce a Main method. Do NOT use top-level statements.
         Do NOT use System.Reflection or System.IO.File.
         """;
+
+    private static string BuildSystemPrompt(SystemState state)
+    {
+        var sb = new StringBuilder(SystemPromptBase);
+        sb.AppendLine();
+        sb.AppendLine("QUALITY GUIDANCE (adjust your output to match these priorities):");
+        var s = state.Sliders;
+        int Val(string k) => s.TryGetValue(k, out var v) ? v : 50;
+
+        void Guidance(string slider, string low, string high)
+        {
+            var v = Val(slider);
+            if (v <= 25) sb.AppendLine($"- {low}");
+            else if (v >= 75) sb.AppendLine($"- {high}");
+        }
+
+        Guidance("performance",   "Performance is NOT a priority — favour clarity over speed.",
+                                  "Performance is CRITICAL — use efficient algorithms, avoid allocations, prefer Span<T>/stackalloc where safe.");
+        Guidance("latency",       "Latency tolerance is high — batch operations are fine.",
+                                  "Latency must be ultra-low — async paths, minimal blocking, pre-computed lookups.");
+        Guidance("ui-polish",     "UI can be minimal/functional — plain HTML is fine.",
+                                  "UI must be polished — use animations, transitions, consistent spacing, professional styling.");
+        Guidance("simplicity",    "Sophisticated patterns are welcome — use advanced design patterns freely.",
+                                  "Keep it SIMPLE — avoid over-engineering, minimal abstractions, straightforward code.");
+        Guidance("readability",   "Terse code is acceptable — abbreviations and compact style are fine.",
+                                  "Maximise readability — descriptive names, XML doc comments, clear structure.");
+        Guidance("conciseness",   "Verbose/explicit code is preferred — spell everything out.",
+                                  "Be concise — use expression bodies, LINQ, pattern matching, minimal boilerplate.");
+        Guidance("security",      "Basic security is sufficient — trust inputs in this context.",
+                                  "Security is paramount — validate all inputs, sanitise outputs, use parameterised queries, apply least privilege.");
+        Guidance("test-coverage", "Minimal tests — cover only happy paths.",
+                                  "Exhaustive tests — cover edge cases, error paths, boundary conditions, property-based where appropriate.");
+        Guidance("error-handling","Fail-fast is fine — throw on unexpected input.",
+                                  "Resilient error handling — use Result types, graceful degradation, structured error responses.");
+        Guidance("abstraction",   "Keep concrete — direct implementations, minimal interfaces beyond what's specified.",
+                                  "Highly abstract — use generics, strategy pattern, dependency inversion, pluggable components.");
+        Guidance("layering",      "Flat structure is fine — all code can live together, minimal separation.",
+                                  "Strict layering — separate Domain, Application, Infrastructure, Presentation layers. No cross-layer leakage.");
+        Guidance("solid",         "Pragmatic — SOLID principles are guidelines, not rules. Inline logic is fine.",
+                                  "Strict SOLID — Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion must all be followed.");
+        return sb.ToString();
+    }
 
     public static async Task<Dictionary<string, string>> GenerateUnitTests(SystemState state, string? previousSource = null, string[]? compileErrors = null)
     {
@@ -423,7 +492,7 @@ public static class Generator
             Reference interfaces/classes you expect to exist (e.g., ICalculator, Calculator).
             """;
 
-        var code = await OpenAIClient.Complete(SystemPrompt, prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["core-tests"] = code };
     }
@@ -445,7 +514,7 @@ public static class Generator
             No class implementations, no using statements, no namespace.
             """;
 
-        var code = await OpenAIClient.Complete(SystemPrompt, prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["core-interfaces"] = code };
     }
@@ -506,7 +575,7 @@ public static class Generator
             No interfaces, no using statements, no namespace, no Main method.
             """;
 
-        var code = await OpenAIClient.Complete(SystemPrompt, prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["core-impl"] = code };
     }
@@ -532,7 +601,7 @@ public static class Generator
 
             Output ONLY the TypeScript test code. No markdown fences, no explanations.
             """;
-        var code = await OpenAIClient.Complete(SystemPrompt, prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["nfr-tests.spec.ts"] = code };
     }
@@ -558,7 +627,7 @@ public static class Generator
 
             Output ONLY the Python code. No markdown fences, no explanations.
             """;
-        var code = await OpenAIClient.Complete(SystemPrompt, prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["locustfile.py"] = code };
     }
@@ -588,7 +657,7 @@ public static class Generator
 
             Output ONLY the TypeScript test code. No markdown fences, no explanations.
             """;
-        var code = await OpenAIClient.Complete(SystemPrompt, prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["integration.test.ts"] = code };
     }
@@ -658,31 +727,175 @@ public class ShareToken
 
 // ── Auth Manager (Google OIDC) ──────────────
 
+public class OAuthProvider
+{
+    public string Name { get; init; } = "";
+    public string DisplayName { get; init; } = "";
+    public string ClientId { get; init; } = "";
+    public string ClientSecret { get; init; } = "";
+    public string AuthorizeUrl { get; init; } = "";
+    public string TokenUrl { get; init; } = "";
+    public string UserInfoUrl { get; init; } = "";
+    public string Scopes { get; init; } = "";
+    public string IconSvg { get; init; } = "";
+    public string BtnColor { get; init; } = "#fff";
+    public string BtnTextColor { get; init; } = "#333";
+    // Maps provider-specific JSON fields to our UserProfile fields
+    public Func<JsonElement, UserProfile> ParseProfile { get; init; } = _ => new();
+}
+
 public static class AuthManager
 {
     private static readonly HttpClient Http = new();
 
-    private static readonly string ClientId =
-        Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID") ?? "";
-    private static readonly string ClientSecret =
-        Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET") ?? "";
     private static readonly string BaseUrl =
         (Environment.GetEnvironmentVariable("IDEAFORGE_BASE_URL") ?? "http://localhost:5005").TrimEnd('/');
 
-    private static readonly string RedirectUri = BaseUrl + "/auth/callback";
-
     // HMAC key for signing auth cookies (generated per-process, or from env)
     private static readonly byte[] HmacKey = GetOrCreateHmacKey();
+
+    // Data root: configurable via IDEAFORGE_DATA_DIR, defaults to ~/.ideaforge
+    public static readonly string DataRoot =
+        Environment.GetEnvironmentVariable("IDEAFORGE_DATA_DIR")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ideaforge");
 
     // In-memory user cache: sub → UserProfile
     private static readonly ConcurrentDictionary<string, UserProfile> Users = new();
 
     // Share tokens: token → ShareToken
     private static readonly ConcurrentDictionary<string, ShareToken> ShareTokens = new();
-    private static readonly string ShareTokensFile = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ideaforge", "shares.json");
+    private static readonly string ShareTokensFile = Path.Combine(AuthManager.DataRoot, "shares.json");
 
-    public static bool IsConfigured => !string.IsNullOrEmpty(ClientId) && !string.IsNullOrEmpty(ClientSecret);
+    // ── OAuth Providers ──
+
+    private static readonly Dictionary<string, OAuthProvider> Providers = InitProviders();
+
+    private static Dictionary<string, OAuthProvider> InitProviders()
+    {
+        var providers = new Dictionary<string, OAuthProvider>(StringComparer.OrdinalIgnoreCase);
+
+        var googleId = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_ID") ?? "";
+        var googleSecret = Environment.GetEnvironmentVariable("GOOGLE_CLIENT_SECRET") ?? "";
+        if (!string.IsNullOrEmpty(googleId) && !string.IsNullOrEmpty(googleSecret))
+        {
+            providers["google"] = new OAuthProvider
+            {
+                Name = "google", DisplayName = "Google",
+                ClientId = googleId, ClientSecret = googleSecret,
+                AuthorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth",
+                TokenUrl = "https://oauth2.googleapis.com/token",
+                UserInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo",
+                Scopes = "openid email profile",
+                IconSvg = """<svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>""",
+                ParseProfile = root => new UserProfile
+                {
+                    Sub = "google:" + (root.GetProperty("sub").GetString() ?? ""),
+                    Email = root.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
+                    Name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                    Picture = root.TryGetProperty("picture", out var p) ? p.GetString() ?? "" : "",
+                },
+            };
+        }
+
+        var msId = Environment.GetEnvironmentVariable("MICROSOFT_CLIENT_ID") ?? "";
+        var msSecret = Environment.GetEnvironmentVariable("MICROSOFT_CLIENT_SECRET") ?? "";
+        if (!string.IsNullOrEmpty(msId) && !string.IsNullOrEmpty(msSecret))
+        {
+            providers["microsoft"] = new OAuthProvider
+            {
+                Name = "microsoft", DisplayName = "Microsoft",
+                ClientId = msId, ClientSecret = msSecret,
+                AuthorizeUrl = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+                TokenUrl = "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+                UserInfoUrl = "https://graph.microsoft.com/oidc/userinfo",
+                Scopes = "openid email profile",
+                IconSvg = """<svg viewBox="0 0 24 24"><path fill="#f25022" d="M1 1h10v10H1z"/><path fill="#00a4ef" d="M1 13h10v10H1z"/><path fill="#7fba00" d="M13 1h10v10H13z"/><path fill="#ffb900" d="M13 13h10v10H13z"/></svg>""",
+                ParseProfile = root => new UserProfile
+                {
+                    Sub = "microsoft:" + (root.TryGetProperty("sub", out var s) ? s.GetString() ?? "" : root.TryGetProperty("id", out var id) ? id.GetString() ?? "" : ""),
+                    Email = root.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
+                    Name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : root.TryGetProperty("displayName", out var dn) ? dn.GetString() ?? "" : "",
+                    Picture = "",
+                },
+            };
+        }
+
+        var ghId = Environment.GetEnvironmentVariable("GITHUB_CLIENT_ID") ?? "";
+        var ghSecret = Environment.GetEnvironmentVariable("GITHUB_CLIENT_SECRET") ?? "";
+        if (!string.IsNullOrEmpty(ghId) && !string.IsNullOrEmpty(ghSecret))
+        {
+            providers["github"] = new OAuthProvider
+            {
+                Name = "github", DisplayName = "GitHub",
+                ClientId = ghId, ClientSecret = ghSecret,
+                AuthorizeUrl = "https://github.com/login/oauth/authorize",
+                TokenUrl = "https://github.com/login/oauth/access_token",
+                UserInfoUrl = "https://api.github.com/user",
+                Scopes = "read:user user:email",
+                IconSvg = """<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>""",
+                BtnColor = "#24292f", BtnTextColor = "#fff",
+                ParseProfile = root => new UserProfile
+                {
+                    Sub = "github:" + (root.TryGetProperty("id", out var id) ? id.GetInt64().ToString() : ""),
+                    Email = root.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
+                    Name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : root.TryGetProperty("login", out var l) ? l.GetString() ?? "" : "",
+                    Picture = root.TryGetProperty("avatar_url", out var a) ? a.GetString() ?? "" : "",
+                },
+            };
+        }
+
+        var fbId = Environment.GetEnvironmentVariable("FACEBOOK_CLIENT_ID") ?? "";
+        var fbSecret = Environment.GetEnvironmentVariable("FACEBOOK_CLIENT_SECRET") ?? "";
+        if (!string.IsNullOrEmpty(fbId) && !string.IsNullOrEmpty(fbSecret))
+        {
+            providers["facebook"] = new OAuthProvider
+            {
+                Name = "facebook", DisplayName = "Facebook",
+                ClientId = fbId, ClientSecret = fbSecret,
+                AuthorizeUrl = "https://www.facebook.com/v18.0/dialog/oauth",
+                TokenUrl = "https://graph.facebook.com/v18.0/oauth/access_token",
+                UserInfoUrl = "https://graph.facebook.com/me?fields=id,name,email,picture.width(200)",
+                Scopes = "email public_profile",
+                IconSvg = """<svg viewBox="0 0 24 24"><path fill="#1877F2" d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>""",
+                ParseProfile = root => new UserProfile
+                {
+                    Sub = "facebook:" + (root.TryGetProperty("id", out var id) ? id.GetString() ?? "" : ""),
+                    Email = root.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
+                    Name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                    Picture = root.TryGetProperty("picture", out var pic) && pic.TryGetProperty("data", out var data) && data.TryGetProperty("url", out var url) ? url.GetString() ?? "" : "",
+                },
+            };
+        }
+
+        var appleId = Environment.GetEnvironmentVariable("APPLE_CLIENT_ID") ?? "";
+        var appleSecret = Environment.GetEnvironmentVariable("APPLE_CLIENT_SECRET") ?? "";
+        if (!string.IsNullOrEmpty(appleId) && !string.IsNullOrEmpty(appleSecret))
+        {
+            providers["apple"] = new OAuthProvider
+            {
+                Name = "apple", DisplayName = "Apple",
+                ClientId = appleId, ClientSecret = appleSecret,
+                AuthorizeUrl = "https://appleid.apple.com/auth/authorize",
+                TokenUrl = "https://appleid.apple.com/auth/token",
+                UserInfoUrl = "", // Apple uses id_token, not userinfo endpoint
+                Scopes = "name email",
+                IconSvg = """<svg viewBox="0 0 24 24"><path fill="currentColor" d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>""",
+                BtnColor = "#000", BtnTextColor = "#fff",
+                ParseProfile = root => new UserProfile
+                {
+                    Sub = "apple:" + (root.TryGetProperty("sub", out var s) ? s.GetString() ?? "" : ""),
+                    Email = root.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
+                    Name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                    Picture = "",
+                },
+            };
+        }
+
+        return providers;
+    }
+
+    public static bool IsConfigured => Providers.Count > 0;
+    public static IReadOnlyDictionary<string, OAuthProvider> ConfiguredProviders => Providers;
 
     private static byte[] GetOrCreateHmacKey()
     {
@@ -727,66 +940,120 @@ public static class AuthManager
         return ValidateCookie(authCookie?.Value);
     }
 
-    // ── Google OIDC ──
+    // ── Generic OAuth ──
 
-    public static string GetLoginUrl(string? state = null)
+    public static string? GetLoginUrl(string providerName, string? state = null)
     {
+        if (!Providers.TryGetValue(providerName, out var provider)) return null;
         var s = state ?? Guid.NewGuid().ToString("N");
-        return $"https://accounts.google.com/o/oauth2/v2/auth?" +
-               $"client_id={Uri.EscapeDataString(ClientId)}" +
-               $"&redirect_uri={Uri.EscapeDataString(RedirectUri)}" +
+        var redirectUri = $"{BaseUrl}/auth/callback/{provider.Name}";
+        var url = $"{provider.AuthorizeUrl}?" +
+               $"client_id={Uri.EscapeDataString(provider.ClientId)}" +
+               $"&redirect_uri={Uri.EscapeDataString(redirectUri)}" +
                $"&response_type=code" +
-               $"&scope={Uri.EscapeDataString("openid email profile")}" +
-               $"&state={Uri.EscapeDataString(s)}" +
-               $"&access_type=online" +
-               $"&prompt=select_account";
+               $"&scope={Uri.EscapeDataString(provider.Scopes)}" +
+               $"&state={Uri.EscapeDataString(s)}";
+        // Provider-specific params
+        if (provider.Name == "google") url += "&access_type=online&prompt=select_account";
+        if (provider.Name == "apple") url += "&response_mode=form_post";
+        return url;
     }
 
-    public static async Task<UserProfile?> HandleCallback(string code)
+    public static async Task<UserProfile?> HandleCallback(string providerName, string code)
     {
+        if (!Providers.TryGetValue(providerName, out var provider)) return null;
+
+        var redirectUri = $"{BaseUrl}/auth/callback/{provider.Name}";
+
         // Exchange code for tokens
-        var tokenBody = new FormUrlEncodedContent(new Dictionary<string, string>
+        var tokenParams = new Dictionary<string, string>
         {
             ["code"] = code,
-            ["client_id"] = ClientId,
-            ["client_secret"] = ClientSecret,
-            ["redirect_uri"] = RedirectUri,
+            ["client_id"] = provider.ClientId,
+            ["client_secret"] = provider.ClientSecret,
+            ["redirect_uri"] = redirectUri,
             ["grant_type"] = "authorization_code",
-        });
+        };
 
-        var tokenResp = await Http.PostAsync("https://oauth2.googleapis.com/token", tokenBody);
+        var tokenReq = new HttpRequestMessage(HttpMethod.Post, provider.TokenUrl)
+        {
+            Content = new FormUrlEncodedContent(tokenParams)
+        };
+        // GitHub needs Accept: application/json
+        if (provider.Name == "github")
+            tokenReq.Headers.Add("Accept", "application/json");
+
+        var tokenResp = await Http.SendAsync(tokenReq);
         var tokenJson = await tokenResp.Content.ReadAsStringAsync();
         if (!tokenResp.IsSuccessStatusCode) return null;
 
         using var tokenDoc = JsonDocument.Parse(tokenJson);
         var accessToken = tokenDoc.RootElement.GetProperty("access_token").GetString()!;
 
+        // Apple: parse id_token JWT instead of userinfo
+        if (provider.Name == "apple" && string.IsNullOrEmpty(provider.UserInfoUrl))
+        {
+            if (tokenDoc.RootElement.TryGetProperty("id_token", out var idTokenEl))
+            {
+                var idToken = idTokenEl.GetString() ?? "";
+                var payload = idToken.Split('.').ElementAtOrDefault(1) ?? "";
+                var padded = payload.PadRight(payload.Length + (4 - payload.Length % 4) % 4, '=');
+                var json = Encoding.UTF8.GetString(Convert.FromBase64String(padded.Replace('-', '+').Replace('_', '/')));
+                using var claimsDoc = JsonDocument.Parse(json);
+                var profile = provider.ParseProfile(claimsDoc.RootElement);
+                Users[profile.Sub] = profile;
+                SaveUserProfile(profile);
+                return profile;
+            }
+            return null;
+        }
+
         // Fetch user info
-        var userReq = new HttpRequestMessage(HttpMethod.Get, "https://www.googleapis.com/oauth2/v3/userinfo");
+        var userReq = new HttpRequestMessage(HttpMethod.Get, provider.UserInfoUrl);
         userReq.Headers.Add("Authorization", $"Bearer {accessToken}");
+        if (provider.Name == "github")
+            userReq.Headers.Add("User-Agent", "IdeaForge");
         var userResp = await Http.SendAsync(userReq);
         var userJson = await userResp.Content.ReadAsStringAsync();
         if (!userResp.IsSuccessStatusCode) return null;
 
         using var userDoc = JsonDocument.Parse(userJson);
-        var root = userDoc.RootElement;
-        var profile = new UserProfile
-        {
-            Sub = root.GetProperty("sub").GetString() ?? "",
-            Email = root.TryGetProperty("email", out var e) ? e.GetString() ?? "" : "",
-            Name = root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
-            Picture = root.TryGetProperty("picture", out var p) ? p.GetString() ?? "" : "",
-        };
+        var userProfile = provider.ParseProfile(userDoc.RootElement);
 
-        Users[profile.Sub] = profile;
-        SaveUserProfile(profile);
-        return profile;
+        // GitHub: email may be null in /user, fetch from /user/emails
+        if (provider.Name == "github" && string.IsNullOrEmpty(userProfile.Email))
+        {
+            try
+            {
+                var emailReq = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/user/emails");
+                emailReq.Headers.Add("Authorization", $"Bearer {accessToken}");
+                emailReq.Headers.Add("User-Agent", "IdeaForge");
+                var emailResp = await Http.SendAsync(emailReq);
+                if (emailResp.IsSuccessStatusCode)
+                {
+                    var emailJson = await emailResp.Content.ReadAsStringAsync();
+                    using var emailDoc = JsonDocument.Parse(emailJson);
+                    foreach (var em in emailDoc.RootElement.EnumerateArray())
+                    {
+                        if (em.TryGetProperty("primary", out var pri) && pri.GetBoolean())
+                        {
+                            userProfile.Email = em.GetProperty("email").GetString() ?? "";
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        Users[userProfile.Sub] = userProfile;
+        SaveUserProfile(userProfile);
+        return userProfile;
     }
 
     // ── User persistence ──
 
-    private static string UserDir(string sub) => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ideaforge", "users", sub);
+    private static string UserDir(string sub) => Path.Combine(AuthManager.DataRoot, "users", sub);
 
     private static string UserProfileFile(string sub) => Path.Combine(UserDir(sub), "profile.json");
 
@@ -1086,9 +1353,11 @@ public static class IdeaForgeServer
                 ["dataflow"] = state.Dataflow,
                 ["frameworks"] = state.Frameworks,
                 ["language"] = state.Language,
+                ["deployment"] = state.Deployment,
                 ["features"] = state.Features,
                 ["stories"] = state.Stories,
                 ["nfr"] = state.NFR,
+                ["sliders"] = state.Sliders,
                 ["tests"] = state.UnitTests,
                 ["interfaces"] = state.Interfaces,
                 ["code"] = state.Code,
@@ -1123,9 +1392,11 @@ public static class IdeaForgeServer
                 if (root.TryGetProperty("dataflow", out var df)) s.Dataflow = JsonToDict(df);
                 if (root.TryGetProperty("frameworks", out var fw)) s.Frameworks = JsonToDict(fw);
                 if (root.TryGetProperty("language", out var lang)) s.Language = JsonToDict(lang);
+                if (root.TryGetProperty("deployment", out var dep)) s.Deployment = JsonToDict(dep);
                 if (root.TryGetProperty("features", out var feat)) s.Features = JsonToDict(feat);
                 if (root.TryGetProperty("stories", out var st)) s.Stories = JsonToDict(st);
                 if (root.TryGetProperty("nfr", out var n)) s.NFR = JsonToDict(n);
+                if (root.TryGetProperty("sliders", out var sl)) s.Sliders = JsonToIntDict(sl);
                 if (root.TryGetProperty("tests", out var t)) s.UnitTests = JsonToDict(t);
                 if (root.TryGetProperty("interfaces", out var ifc)) s.Interfaces = JsonToDict(ifc);
                 if (root.TryGetProperty("code", out var c)) s.Code = JsonToDict(c);
@@ -1155,6 +1426,14 @@ public static class IdeaForgeServer
             var d = new Dictionary<string, string>();
             foreach (var prop in el.EnumerateObject())
                 d[prop.Name] = prop.Value.GetString() ?? "";
+            return d;
+        }
+
+        private static Dictionary<string, int> JsonToIntDict(JsonElement el)
+        {
+            var d = new Dictionary<string, int>();
+            foreach (var prop in el.EnumerateObject())
+                d[prop.Name] = prop.Value.TryGetInt32(out var v) ? v : 50;
             return d;
         }
     }
@@ -1236,10 +1515,14 @@ public static class IdeaForgeServer
         _listener.Prefixes.Add("http://+:5005/");
         _listener.Start();
         Console.WriteLine("  → IdeaForge UI at http://localhost:5005 (all interfaces)");
+        Console.WriteLine($"  → Data directory: {AuthManager.DataRoot}");
         if (AuthManager.IsConfigured)
-            Console.WriteLine("  → Google OIDC authentication enabled");
+        {
+            var providers = string.Join(", ", AuthManager.ConfiguredProviders.Keys);
+            Console.WriteLine($"  → OAuth providers enabled: {providers}");
+        }
         else
-            Console.WriteLine("  ⚠ GOOGLE_CLIENT_ID/SECRET not set — auth disabled (open access)");
+            Console.WriteLine("  ⚠ No OAuth providers configured — auth disabled (open access)");
         Task.Run(Listen);
     }
 
@@ -1271,23 +1554,27 @@ public static class IdeaForgeServer
         {
             // ── Auth endpoints (no auth required) ──
 
-            if (path == "/auth/login")
+            if (path == "/auth/login" || path.StartsWith("/auth/login/"))
             {
                 if (!AuthManager.IsConfigured)
                 {
-                    // No auth configured — auto-login as local user
                     SetAuthCookie(ctx.Response, "local");
                     ctx.Response.Redirect("/");
                     ctx.Response.Close();
                     return;
                 }
-                var url = AuthManager.GetLoginUrl();
+                var provider = path.Length > "/auth/login/".Length
+                    ? path.Substring("/auth/login/".Length)
+                    : AuthManager.ConfiguredProviders.Keys.First();
+                var url = AuthManager.GetLoginUrl(provider);
+                if (url == null) { ctx.Response.Redirect("/"); ctx.Response.Close(); return; }
                 ctx.Response.Redirect(url);
                 ctx.Response.Close();
                 return;
             }
-            else if (path == "/auth/callback")
+            else if (path.StartsWith("/auth/callback/"))
             {
+                var provider = path.Substring("/auth/callback/".Length);
                 var qs = ctx.Request.QueryString;
                 var code = qs["code"];
                 if (string.IsNullOrEmpty(code))
@@ -1297,7 +1584,7 @@ public static class IdeaForgeServer
                     await WriteResponse(ctx, body, contentType, 400);
                     return;
                 }
-                var profile = await AuthManager.HandleCallback(code);
+                var profile = await AuthManager.HandleCallback(provider, code);
                 if (profile == null)
                 {
                     body = "Authentication failed";
@@ -1308,6 +1595,13 @@ public static class IdeaForgeServer
                 SetAuthCookie(ctx.Response, profile.Sub);
                 var um = GetOrCreateUser(profile.Sub);
                 EnsureUserInit(um);
+                ctx.Response.Redirect("/");
+                ctx.Response.Close();
+                return;
+            }
+            else if (path == "/auth/callback")
+            {
+                // Legacy Google-only callback (redirect to provider-specific)
                 ctx.Response.Redirect("/");
                 ctx.Response.Close();
                 return;
@@ -1402,9 +1696,11 @@ public static class IdeaForgeServer
                         dataflow = live.State.Dataflow,
                         frameworks = live.State.Frameworks,
                         language = live.State.Language,
+                        deployment = live.State.Deployment,
                         features = live.State.Features,
                         stories = live.State.Stories,
                         nfr = live.State.NFR,
+                        sliders = live.State.Sliders,
                         tests = live.State.UnitTests,
                         interfaces = live.State.Interfaces,
                         code = live.State.Code,
@@ -1469,9 +1765,11 @@ public static class IdeaForgeServer
                     dataflow = live.State.Dataflow,
                     frameworks = live.State.Frameworks,
                     language = live.State.Language,
+                    deployment = live.State.Deployment,
                     features = live.State.Features,
                     stories = live.State.Stories,
                     nfr = live.State.NFR,
+                    sliders = live.State.Sliders,
                     tests = live.State.UnitTests,
                     interfaces = live.State.Interfaces,
                     code = live.State.Code,
@@ -1496,9 +1794,11 @@ public static class IdeaForgeServer
                 if (root.TryGetProperty("dataflow", out var df)) { live.State.Dataflow = JsonToDict(df); delta["dataflow"] = live.State.Dataflow; }
                 if (root.TryGetProperty("frameworks", out var fw)) { live.State.Frameworks = JsonToDict(fw); delta["frameworks"] = live.State.Frameworks; }
                 if (root.TryGetProperty("language", out var lang)) { live.State.Language = JsonToDict(lang); delta["language"] = live.State.Language; }
+                if (root.TryGetProperty("deployment", out var dep)) { live.State.Deployment = JsonToDict(dep); delta["deployment"] = live.State.Deployment; }
                 if (root.TryGetProperty("features", out var feat)) { live.State.Features = JsonToDict(feat); delta["features"] = live.State.Features; }
                 if (root.TryGetProperty("nfr", out var n)) { live.State.NFR = JsonToDict(n); delta["nfr"] = live.State.NFR; }
                 if (root.TryGetProperty("stories", out var st)) { live.State.Stories = JsonToDict(st); delta["stories"] = live.State.Stories; }
+                if (root.TryGetProperty("sliders", out var sli)) { live.State.Sliders = JsonToIntDict(sli); delta["sliders"] = live.State.Sliders; }
                 live.AddChat("system", "🔧 Constraints updated");
                 _ = live.Broadcast("state", delta, clientId);
                 _ = live.Broadcast("chat", new { role = "system", message = "🔧 Constraints updated" }, clientId);
@@ -1546,7 +1846,9 @@ public static class IdeaForgeServer
                             rules = live.State.Rules, invariants = live.State.Invariants,
                             architecture = live.State.Architecture, dataflow = live.State.Dataflow,
                             frameworks = live.State.Frameworks, language = live.State.Language,
+                            deployment = live.State.Deployment,
                             features = live.State.Features, nfr = live.State.NFR, stories = live.State.Stories,
+                            sliders = live.State.Sliders,
                             tests = live.State.UnitTests, interfaces = live.State.Interfaces,
                             code = live.State.Code,
                             nfrTests = live.State.NfrTests, soakTests = live.State.SoakTests,
@@ -1672,8 +1974,10 @@ public static class IdeaForgeServer
                     ["Dataflow"] = live.State.Dataflow.Keys.ToList(),
                     ["Frameworks"] = live.State.Frameworks.Keys.ToList(),
                     ["Language"] = live.State.Language.Keys.ToList(),
+                    ["Deployment"] = live.State.Deployment.Keys.ToList(),
                     ["Features"] = live.State.Features.Keys.ToList(),
                     ["NFR"] = live.State.NFR.Keys.ToList(),
+                    ["Sliders"] = live.State.Sliders.Keys.ToList(),
                     ["Stories"] = live.State.Stories.Keys.ToList(),
                     ["UnitTests"] = live.State.UnitTests.Keys.ToList(),
                     ["Interfaces"] = live.State.Interfaces.Keys.ToList(),
@@ -1699,6 +2003,7 @@ public static class IdeaForgeServer
                     "dataflow" => live.State.Dataflow,
                     "frameworks" => live.State.Frameworks,
                     "language" => live.State.Language,
+                    "deployment" => live.State.Deployment,
                     "features" => live.State.Features,
                     "nfr" => live.State.NFR,
                     "stories" => live.State.Stories,
@@ -1780,6 +2085,14 @@ public static class IdeaForgeServer
         return d;
     }
 
+    private static Dictionary<string, int> JsonToIntDict(JsonElement el)
+    {
+        var d = new Dictionary<string, int>();
+        foreach (var prop in el.EnumerateObject())
+            d[prop.Name] = prop.Value.TryGetInt32(out var v) ? v : 50;
+        return d;
+    }
+
     private static void SetAuthCookie(HttpListenerResponse resp, string sub)
     {
         var value = AuthManager.CreateAuthCookie(sub);
@@ -1821,11 +2134,12 @@ public static class IdeaForgeServer
                     User says: "{prompt}"
 
                     If the user is asking to change the domain, add features, modify rules, or adjust constraints,
-                    output a JSON object with any of these keys to update: "description", "personas", "rules", "invariants", "architecture", "dataflow", "frameworks", "language", "features", "nfr", "stories".
+                    output a JSON object with any of these keys to update: "description", "personas", "rules", "invariants", "architecture", "dataflow", "frameworks", "language", "deployment", "features", "nfr", "stories".
                     Each value is an object of key-value pairs to SET (merge with existing).
                     "description" is for what the user wants to build. "personas" is for user personas/actors.
                     "features" is for system capabilities and features. "stories" is for user stories as interactions.
                     "dataflow" is for data flow descriptions. "frameworks" is for allowed frameworks/tools. "language" is for programming language choices.
+                    "deployment" is for deployment target (e.g. bare metal, Azure App Service, AKS, Docker, serverless).
                     If the user just wants to regenerate without changes, output this exact JSON: {"{"}\"action\":\"regenerate\"{"}"}
                     If unclear, make your best interpretation.
                     """);
@@ -1843,6 +2157,7 @@ public static class IdeaForgeServer
                     if (root.TryGetProperty("dataflow", out var df)) { MergeDict(live.State.Dataflow, df); changed = true; }
                     if (root.TryGetProperty("frameworks", out var fw)) { MergeDict(live.State.Frameworks, fw); changed = true; }
                     if (root.TryGetProperty("language", out var lang)) { MergeDict(live.State.Language, lang); changed = true; }
+                    if (root.TryGetProperty("deployment", out var dep)) { MergeDict(live.State.Deployment, dep); changed = true; }
                     if (root.TryGetProperty("features", out var feat)) { MergeDict(live.State.Features, feat); changed = true; }
                     if (root.TryGetProperty("nfr", out var n)) { MergeDict(live.State.NFR, n); changed = true; }
                     if (root.TryGetProperty("stories", out var st)) { MergeDict(live.State.Stories, st); changed = true; }
@@ -1854,6 +2169,7 @@ public static class IdeaForgeServer
                             rules = live.State.Rules, invariants = live.State.Invariants,
                             architecture = live.State.Architecture, dataflow = live.State.Dataflow,
                             frameworks = live.State.Frameworks, language = live.State.Language,
+                            deployment = live.State.Deployment,
                             features = live.State.Features, nfr = live.State.NFR, stories = live.State.Stories,
                         });
                     }
@@ -2163,8 +2479,7 @@ public static class IdeaForgeServer
     }
 
     private static string BuildsManifestPath(string userSub) =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ideaforge", "users", userSub, "builds.json");
+        Path.Combine(AuthManager.DataRoot, "users", userSub, "builds.json");
 
     private static List<Dictionary<string, object>> LoadBuildsManifest(string userSub)
     {
@@ -2212,9 +2527,7 @@ public static class IdeaForgeServer
         if (string.IsNullOrEmpty(projectSlug)) projectSlug = "untitled";
         var version = live.State.Version;
 
-        var artifactDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ideaforge", "artifacts", projectSlug);
+        var artifactDir = Path.Combine(AuthManager.DataRoot, "artifacts", projectSlug);
         Directory.CreateDirectory(artifactDir);
 
         var zipName = $"{projectSlug}-v{version}.zip";
@@ -2273,9 +2586,11 @@ public static class IdeaForgeServer
                 ["dataflow"] = live.State.Dataflow,
                 ["frameworks"] = live.State.Frameworks,
                 ["language"] = live.State.Language,
+                ["deployment"] = live.State.Deployment,
                 ["features"] = live.State.Features,
                 ["stories"] = live.State.Stories,
                 ["nfr"] = live.State.NFR,
+                ["sliders"] = live.State.Sliders,
             };
             File.WriteAllText(Path.Combine(tempDir, "constraints.json"),
                 JsonSerializer.Serialize(constraints, new JsonSerializerOptions { WriteIndented = true }));
@@ -2314,8 +2629,27 @@ public static class IdeaForgeServer
         }
     }
 
-    private static string LoginPage() =>
-        """
+    private static string LoginPage()
+    {
+        var buttons = new StringBuilder();
+        foreach (var (name, provider) in AuthManager.ConfiguredProviders)
+        {
+            buttons.AppendLine($"""
+                <a href="/auth/login/{provider.Name}" class="login-btn" style="background:{provider.BtnColor}; color:{provider.BtnTextColor};">
+                    {provider.IconSvg}
+                    Sign in with {provider.DisplayName}
+                </a>
+            """);
+        }
+        if (buttons.Length == 0)
+        {
+            buttons.AppendLine("""
+                <a href="/auth/login" class="login-btn">
+                    🔓 Continue without sign-in
+                </a>
+            """);
+        }
+        return $$"""
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -2325,13 +2659,14 @@ public static class IdeaForgeServer
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; }
-                .login-card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 48px 40px; text-align: center; max-width: 400px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+                .login-card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 48px 40px; text-align: center; max-width: 420px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
                 .logo-icon { font-size: 64px; margin-bottom: 16px; filter: drop-shadow(0 0 12px rgba(249,115,22,0.6)); }
                 .logo-text { font-size: 32px; font-weight: 700; background: linear-gradient(135deg, #f97316, #fb923c, #fbbf24); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
                 .logo-sub { font-size: 13px; color: #8b949e; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 32px; }
-                .login-btn { display: inline-flex; align-items: center; gap: 12px; background: #fff; color: #333; border: none; padding: 12px 32px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; text-decoration: none; }
+                .login-buttons { display: flex; flex-direction: column; gap: 12px; align-items: center; }
+                .login-btn { display: inline-flex; align-items: center; gap: 12px; background: #fff; color: #333; border: none; padding: 12px 32px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; text-decoration: none; width: 100%; justify-content: center; }
                 .login-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255,255,255,0.1); }
-                .login-btn svg { width: 20px; height: 20px; }
+                .login-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
                 .login-note { margin-top: 24px; font-size: 12px; color: #8b949e; }
             </style>
         </head>
@@ -2340,15 +2675,15 @@ public static class IdeaForgeServer
                 <div class="logo-icon">🔥</div>
                 <div class="logo-text">IdeaForge</div>
                 <div class="logo-sub">Virtual TDD Engine</div>
-                <a href="/auth/login" class="login-btn">
-                    <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-                    Sign in with Google
-                </a>
+                <div class="login-buttons">
+                    {{buttons}}
+                </div>
                 <div class="login-note">Sign in to access your personal workspace</div>
             </div>
         </body>
         </html>
         """;
+    }
 
     private static string HtmlPage() =>
         """
@@ -2402,6 +2737,13 @@ public static class IdeaForgeServer
                 .btn-sm.save { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
                 .btn-sm.gallery { background: #7c3aed; color: #fff; border-color: #7c3aed; }
                 .btn-sm.gallery:hover { background: #6d28d9; }
+                .slider-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
+                .slider-row label { flex: 0 0 110px; font-size: 11px; color: var(--text-dim); text-transform: capitalize; }
+                .slider-row input[type=range] { flex: 1; accent-color: var(--accent); height: 6px; cursor: pointer; }
+                .slider-row .slider-val { flex: 0 0 28px; font-size: 11px; color: var(--accent); text-align: right; font-weight: 600; }
+                .slider-row .slider-lo, .slider-row .slider-hi { font-size: 9px; color: var(--text-dim); flex: 0 0 50px; }
+                .slider-row .slider-hi { text-align: right; }
+                .slider-save { padding: 6px 12px; text-align: right; }
                 .layer-group { margin-bottom: 12px; }
                 .layer-group-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--accent); padding: 8px 10px 4px; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
                 .preset-dropdown { position: absolute; z-index: 100; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.4); max-height: 280px; overflow-y: auto; min-width: 260px; }
@@ -2549,6 +2891,12 @@ public static class IdeaForgeServer
             <div id="main">
                 <div id="left">
                     <div id="constraints"></div>
+                    <div id="sliders-panel">
+                        <div class="layer-group">
+                            <div class="layer-group-title" style="cursor:pointer;" onclick="document.getElementById('sliders-body').classList.toggle('open')">🎚️ Quality Sliders</div>
+                            <div id="sliders-body" class="constraint-body"></div>
+                        </div>
+                    </div>
                     <div id="prompt-area">
                         <textarea id="prompt-input" rows="3" placeholder="Describe what to build or change... e.g. 'Add a string reversal utility' or 'Make Divide return a tuple instead of Result'"></textarea>
                         <div id="prompt-actions">
@@ -2665,6 +3013,7 @@ public static class IdeaForgeServer
                         if (d.state) {
                             currentState = d.state;
                             renderConstraints();
+                            renderSliders();
                             syncProjectMeta();
                         }
                         if (d.code && editor && currentTab !== 'browser') {
@@ -2681,6 +3030,7 @@ public static class IdeaForgeServer
                         const d = JSON.parse(e.data);
                         Object.assign(currentState, d);
                         renderConstraints();
+                        renderSliders();
                         syncProjectMeta();
                     });
 
@@ -2779,14 +3129,14 @@ public static class IdeaForgeServer
                 const LAYER_GROUPS = [
                     { name: '0 · Intent', layers: ['description', 'personas'] },
                     { name: '1 · Constraints', layers: ['rules', 'invariants'] },
-                    { name: '2 · Shape', layers: ['architecture', 'dataflow', 'frameworks', 'language'] },
+                    { name: '2 · Shape', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'] },
                     { name: '3 · Behaviour', layers: ['features', 'stories', 'nfr'] },
                 ];
                 const LAYERS = LAYER_GROUPS.flatMap(g => g.layers);
                 const LAYER_LABELS = {
                     description: 'Description', personas: 'Personas',
                     rules: 'Rules', invariants: 'Invariants',
-                    architecture: 'Architecture', dataflow: 'Dataflow', frameworks: 'Frameworks & Tools', language: 'Language',
+                    architecture: 'Architecture', dataflow: 'Dataflow', frameworks: 'Frameworks & Tools', language: 'Language', deployment: 'Deployment',
                     features: 'Features', stories: 'Stories', nfr: 'NFR',
                 };
 
@@ -2845,6 +3195,14 @@ public static class IdeaForgeServer
                         { label: '🦀 Rust', items: { 'language': 'Rust latest stable edition.', 'style': 'Prefer ownership over references. Use Result/Option instead of panics.' }},
                         { label: '🐹 Go', items: { 'language': 'Go 1.22+.', 'style': 'Follow Go idioms. Use error values, interfaces, and goroutines.' }},
                     ],
+                    deployment: [
+                        { label: '🖥️ Bare Metal / VM', items: { 'target': 'Deploy directly on bare-metal servers or virtual machines.', 'process': 'Run as a systemd service or Windows Service. Reverse proxy via Nginx/Caddy.' }},
+                        { label: '☁️ Azure App Service', items: { 'target': 'Deploy to Azure App Service (PaaS).', 'scaling': 'Use built-in auto-scaling and deployment slots.', 'storage': 'Use Azure Blob Storage for persistent files.' }},
+                        { label: '☸️ Azure AKS / Kubernetes', items: { 'target': 'Deploy to Azure Kubernetes Service (AKS).', 'containers': 'Package as Docker containers with health probes.', 'scaling': 'Use Horizontal Pod Autoscaler for elastic scaling.', 'ingress': 'Use NGINX Ingress Controller or Azure Application Gateway.' }},
+                        { label: '🐳 Docker Compose', items: { 'target': 'Deploy with Docker Compose for single-host setups.', 'containers': 'Each service in its own container with shared network.', 'volumes': 'Use named volumes for data persistence.' }},
+                        { label: '⚡ Azure Functions / Serverless', items: { 'target': 'Deploy as Azure Functions (serverless).', 'triggers': 'Use HTTP triggers for APIs, timer triggers for scheduled work.', 'scaling': 'Scales to zero when idle, auto-scales under load.' }},
+                        { label: '🌍 AWS ECS / Fargate', items: { 'target': 'Deploy to AWS ECS with Fargate (serverless containers).', 'networking': 'Use ALB for load balancing, VPC for networking.', 'scaling': 'Auto-scaling based on CPU/memory or custom metrics.' }},
+                    ],
                     nfr: [
                         { label: '⚡ High Performance', items: { 'response-time': 'All API responses must complete within 200ms at p95.', 'throughput': 'System must handle 1000 concurrent requests.' }},
                         { label: '🔒 Security First', items: { 'auth-required': 'All endpoints must require authentication except health checks.', 'input-validation': 'All user input must be validated and sanitized before processing.', 'encryption': 'All data at rest and in transit must be encrypted.' }},
@@ -2879,6 +3237,45 @@ public static class IdeaForgeServer
                 };
                 let currentState = {};
                 let lastChatLen = 0;
+
+                const SLIDER_META = {
+                    'performance':   { lo: 'Optional', hi: 'Critical', icon: '⚡' },
+                    'latency':       { lo: 'Relaxed', hi: 'Ultra-low', icon: '🏎️' },
+                    'ui-polish':     { lo: 'Minimal', hi: 'Polished', icon: '✨' },
+                    'simplicity':    { lo: 'Sophisticated', hi: 'Simple', icon: '🧊' },
+                    'readability':   { lo: 'Terse', hi: 'Verbose', icon: '📖' },
+                    'conciseness':   { lo: 'Explicit', hi: 'Concise', icon: '✂️' },
+                    'security':      { lo: 'Basic', hi: 'Hardened', icon: '🔒' },
+                    'test-coverage': { lo: 'Happy-path', hi: 'Exhaustive', icon: '🧪' },
+                    'error-handling':{ lo: 'Fail-fast', hi: 'Resilient', icon: '🛡️' },
+                    'abstraction':   { lo: 'Concrete', hi: 'Abstract', icon: '🧩' },
+                    'layering':      { lo: 'Flat', hi: 'Strict layers', icon: '🏗️' },
+                    'solid':         { lo: 'Pragmatic', hi: 'Strict SOLID', icon: '📐' },
+                };
+
+                function renderSliders() {
+                    const el = document.getElementById('sliders-body');
+                    const sliders = currentState.sliders || {};
+                    el.innerHTML = Object.entries(SLIDER_META).map(([key, meta]) => {
+                        const val = sliders[key] ?? 50;
+                        return `<div class="slider-row">
+                            <label>${meta.icon} ${key.replace(/-/g,' ')}</label>
+                            <span class="slider-lo">${meta.lo}</span>
+                            <input type="range" min="0" max="100" value="${val}" data-slider="${key}" oninput="this.nextElementSibling.textContent=this.value" />
+                            <span class="slider-val">${val}</span>
+                            <span class="slider-hi">${meta.hi}</span>
+                        </div>`;
+                    }).join('') + `<div class="slider-save"><button class="btn-sm save" onclick="saveSliders()">💾 Save sliders</button></div>`;
+                }
+
+                async function saveSliders() {
+                    const sliders = {};
+                    document.querySelectorAll('#sliders-body input[type=range]').forEach(inp => {
+                        sliders[inp.dataset.slider] = parseInt(inp.value);
+                    });
+                    currentState.sliders = sliders;
+                    await apiFetch('/api/state', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sliders }) });
+                }
 
                 async function pollLoop() {
                     await refreshAll();
@@ -2957,6 +3354,7 @@ public static class IdeaForgeServer
                         const r = await fetch('/api/state');
                         currentState = await r.json();
                         renderConstraints();
+                        renderSliders();
                         syncProjectMeta();
                     } catch {}
                 }

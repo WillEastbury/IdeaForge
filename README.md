@@ -162,9 +162,18 @@ Open **http://localhost:5005** in your browser.
 | `OPENAI_ENDPOINT` | `https://api.openai.com/v1/chat/completions` | API endpoint |
 | `GOOGLE_CLIENT_ID` | *(disabled)* | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | *(disabled)* | Google OAuth client secret |
+| `MICROSOFT_CLIENT_ID` | *(disabled)* | Microsoft / Entra ID OAuth client ID |
+| `MICROSOFT_CLIENT_SECRET` | *(disabled)* | Microsoft / Entra ID OAuth client secret |
+| `GITHUB_CLIENT_ID` | *(disabled)* | GitHub OAuth App client ID |
+| `GITHUB_CLIENT_SECRET` | *(disabled)* | GitHub OAuth App client secret |
+| `FACEBOOK_CLIENT_ID` | *(disabled)* | Facebook OAuth App ID |
+| `FACEBOOK_CLIENT_SECRET` | *(disabled)* | Facebook OAuth App secret |
+| `APPLE_CLIENT_ID` | *(disabled)* | Apple Services ID |
+| `APPLE_CLIENT_SECRET` | *(disabled)* | Apple client secret (pre-generated JWT) |
+| `IDEAFORGE_DATA_DIR` | `~/.ideaforge` | Root directory for all persistent data (users, sessions, artifacts) |
 | `IDEAFORGE_BASE_URL` | `http://localhost:5005` | Base URL for OAuth redirects |
 
-Without Google credentials, auth is disabled and the app runs in open-access "local" mode.
+Configure one or more providers to enable sign-in. Without any OAuth credentials, auth is disabled and the app runs in open-access "local" mode. The login page dynamically shows buttons only for configured providers.
 
 ---
 
