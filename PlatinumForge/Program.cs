@@ -2981,6 +2981,71 @@ public static class PlatinumForgeServer
                     ctx.Response.StatusCode = 404;
                 }
             }
+            else if (path == "/api/council/suggest" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var stage = doc.RootElement.GetProperty("stage").GetString() ?? "";
+
+                var validStages = new HashSet<string> { "description", "personas", "rules", "invariants", "architecture", "features", "stories", "nfr" };
+
+                if (!validStages.Contains(stage))
+                {
+                    body = JsonSerializer.Serialize(new { ok = false, error = $"Unknown stage: {stage}" });
+                }
+                else
+                {
+                    var stateContext = BuildStateContextSummary(live);
+
+                    if (stage == "description")
+                    {
+                        var agents = new[] { "apollo", "hestia", "psi" };
+                        var suggestions = new List<object>();
+                        foreach (var agent in agents)
+                        {
+                            var persona = GetAgentSystemPrompt(agent);
+                            var prompt = $"You are {agent}. {persona}\n\nThe user has this idea: \"{live.State.Description.GetValueOrDefault("main", "")}\"\n\nCurrent project context:\n{stateContext}\n\nExpand this into a detailed 2-3 paragraph project description. Be specific about what the software should do, who it's for, and key capabilities. Respond with ONLY the expanded description text, no JSON, no markdown fences.";
+                            try
+                            {
+                                var response = await OpenAIClient.Complete("You are a software design agent. Respond with only the expanded description.", prompt);
+                                suggestions.Add(new { agent, text = response.Trim() });
+                            }
+                            catch (Exception ex)
+                            {
+                                suggestions.Add(new { agent, text = $"(suggestion failed: {ex.Message})" });
+                            }
+                        }
+                        body = JsonSerializer.Serialize(new { ok = true, suggestions });
+                    }
+                    else
+                    {
+                        var suggestions = new List<object>();
+                        foreach (var agent in CouncilAgents)
+                        {
+                            var persona = GetAgentSystemPrompt(agent);
+                            var prompt = $"You are {agent}. {persona}\n\nProject description: {live.State.Description.GetValueOrDefault("main", "")}\n\nCurrent project context:\n{stateContext}\n\nSuggest 2-4 items for the \"{stage}\" constraint layer. Each item needs a short kebab-case key and a description value.\n\nRespond with ONLY a JSON array like: [{{\"key\": \"item-key\", \"value\": \"Item description\"}}]";
+                            try
+                            {
+                                var response = await OpenAIClient.Complete("You are a software design agent. Respond with ONLY a JSON array.", prompt);
+                                var stripped = Generator.StripMarkdownFences(response);
+                                var items = JsonSerializer.Deserialize<JsonElement>(stripped);
+                                if (items.ValueKind == JsonValueKind.Array)
+                                {
+                                    foreach (var item in items.EnumerateArray())
+                                    {
+                                        var key = item.GetProperty("key").GetString() ?? "";
+                                        var value = item.GetProperty("value").GetString() ?? "";
+                                        if (!string.IsNullOrEmpty(key))
+                                            suggestions.Add(new { agent, key, value });
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        body = JsonSerializer.Serialize(new { ok = true, suggestions });
+                    }
+                }
+            }
             else
             {
                 body = HtmlPage();
@@ -3228,9 +3293,21 @@ public static class PlatinumForgeServer
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"Description entries: {live.State.Description.Count}");
-        sb.AppendLine($"Rules: {live.State.Rules.Count}, Invariants: {live.State.Invariants.Count}");
-        sb.AppendLine($"Architecture entries: {live.State.Architecture.Count}, Features: {live.State.Features.Count}");
-        sb.AppendLine($"NFR entries: {live.State.NFR.Count}, Stories: {live.State.Stories.Count}");
+        foreach (var kv in live.State.Description) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"Personas: {live.State.Personas.Count}");
+        foreach (var kv in live.State.Personas) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"Rules: {live.State.Rules.Count}");
+        foreach (var kv in live.State.Rules) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"Invariants: {live.State.Invariants.Count}");
+        foreach (var kv in live.State.Invariants) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"Architecture entries: {live.State.Architecture.Count}");
+        foreach (var kv in live.State.Architecture) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"Features: {live.State.Features.Count}");
+        foreach (var kv in live.State.Features) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"Stories: {live.State.Stories.Count}");
+        foreach (var kv in live.State.Stories) sb.AppendLine($"  {kv.Key}: {kv.Value}");
+        sb.AppendLine($"NFR entries: {live.State.NFR.Count}");
+        foreach (var kv in live.State.NFR) sb.AppendLine($"  {kv.Key}: {kv.Value}");
         sb.AppendLine($"Interfaces: {live.State.Interfaces.Count}, Code files: {live.State.Code.Count}");
         sb.AppendLine($"Unit tests: {live.State.UnitTests.Count}, NFR tests: {live.State.NfrTests.Count}");
         sb.AppendLine($"Soak tests: {live.State.SoakTests.Count}, Integration tests: {live.State.IntegrationTests.Count}");
@@ -4463,6 +4540,38 @@ public static class PlatinumForgeServer
                 .btn-sm.save { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
                 .btn-sm.gallery { background: #7c3aed; color: #fff; border-color: #7c3aed; }
                 .btn-sm.gallery:hover { background: #6d28d9; }
+
+                /* Wizard */
+                #wizard { display: flex; flex-direction: column; height: 100%; }
+                #wizard-steps { display: flex; gap: 2px; padding: 8px; background: #181825; border-bottom: 1px solid #333; flex-wrap: wrap; }
+                .wizard-step { padding: 4px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; background: #23233a; color: #aaa; border: 1px solid #333; transition: all 0.2s; }
+                .wizard-step.active { background: #6c3baa; color: #fff; border-color: #9b59b6; }
+                .wizard-step.done { background: #1a3a2a; color: #3ecf8e; border-color: #2a5a3a; }
+                #wizard-content { flex: 1; overflow-y: auto; padding: 16px; }
+                #wizard-nav { display: flex; gap: 8px; padding: 12px; background: #181825; border-top: 1px solid #333; }
+                #wizard-nav .btn { flex: 1; }
+                .wizard-title { font-size: 18px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
+                .wizard-subtitle { font-size: 12px; color: #888; margin-bottom: 16px; }
+                .desc-option { background: #23233a; border: 2px solid #333; border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
+                .desc-option:hover { border-color: #6c3baa; }
+                .desc-option.selected { border-color: #9b59b6; background: #2a1f3d; }
+                .desc-option .agent-badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; margin-bottom: 6px; }
+                .desc-option p { color: #ccc; font-size: 13px; line-height: 1.5; margin: 0; }
+                .suggest-item { display: flex; align-items: flex-start; gap: 8px; background: #23233a; border: 1px solid #333; border-radius: 6px; padding: 10px; margin-bottom: 6px; }
+                .suggest-item input[type="checkbox"] { margin-top: 3px; accent-color: #9b59b6; }
+                .suggest-item .suggest-key { font-weight: 600; color: #bc8cff; font-size: 12px; }
+                .suggest-item .suggest-value { color: #ccc; font-size: 12px; line-height: 1.4; }
+                .suggest-item .agent-badge { font-size: 9px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+                .custom-add { display: flex; gap: 6px; margin-top: 10px; }
+                .custom-add input { flex: 1; background: #1a1a2e; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; padding: 6px 8px; font-size: 12px; }
+                .custom-add button { white-space: nowrap; }
+                .summary-section { margin-bottom: 16px; }
+                .summary-section h4 { color: #bc8cff; font-size: 13px; margin-bottom: 6px; }
+                .summary-section .summary-items { background: #23233a; border-radius: 6px; padding: 8px 12px; }
+                .summary-section .summary-items li { color: #ccc; font-size: 12px; padding: 2px 0; list-style: none; }
+                .loading-suggestions { text-align: center; padding: 40px; color: #888; }
+                .loading-suggestions .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #333; border-top-color: #9b59b6; border-radius: 50%; animation: spin 0.8s linear infinite; }
+
                 .slider-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
                 .slider-row label { flex: 0 0 110px; font-size: 11px; color: var(--text-dim); text-transform: capitalize; }
                 .slider-row input[type=range] { flex: 1; accent-color: var(--accent); height: 6px; cursor: pointer; }
@@ -4662,7 +4771,16 @@ public static class PlatinumForgeServer
 
             <div id="main">
                 <div id="left">
-                    <div id="constraints"></div>
+                    <div id="wizard">
+                        <div id="wizard-steps"></div>
+                        <div id="wizard-content"></div>
+                        <div id="wizard-nav">
+                            <button class="btn" id="wizard-back" onclick="wizardBack()">◀ Back</button>
+                            <button class="btn btn-accent" id="wizard-suggest" onclick="wizardSuggest()">🏛️ Ask Council</button>
+                            <button class="btn btn-primary" id="wizard-next" onclick="wizardNext()">Save & Next ▶</button>
+                        </div>
+                    </div>
+                    <div id="constraints" style="display:none;"></div>
                     <div id="history-panel">
                         <div class="history-header"><span>📜 History</span><span id="historyCount">0</span></div>
                         <div id="history-list"></div>
@@ -5428,79 +5546,260 @@ public static class PlatinumForgeServer
                 }
 
                 function renderConstraints() {
-                    const el = document.getElementById('constraints');
-                    const group = LAYER_GROUPS[activeStage];
+                    renderWizard();
+                }
 
-                    // Stage 4 = Quality Sliders + Pipeline Config
-                    if (activeStage === 4) {
-                        const slidersHtml = buildSlidersHtml();
-                        const pipelineHtml = buildPipelineConfigHtml();
-                        el.innerHTML = `<div class="layer-group" style="padding:8px;">
-                            <div class="layer-group-title">${group.icon} ${group.name}</div>
-                            ${slidersHtml}
-                            <div class="layer-group-title" style="margin-top:12px;">⚙️ Pipeline Stages</div>
-                            <div style="padding:4px 8px;font-size:11px;color:var(--text-dim);margin-bottom:4px;">Toggle which stages run during generation</div>
-                            ${pipelineHtml}
-                        </div>`;
+                // ========== WIZARD ==========
+                const WIZARD_STAGES = [
+                    { key: 'description', label: '💡 Idea', title: 'What do you want to build?', subtitle: 'Enter your idea in one sentence. The council will suggest expanded descriptions.' },
+                    { key: 'personas', label: '👥 Personas', title: 'Who is this for?', subtitle: 'Target users and personas for your application.' },
+                    { key: 'rules', label: '📏 Rules', title: 'Business Rules', subtitle: 'Core business rules and logic constraints.' },
+                    { key: 'invariants', label: '🔒 Invariants', title: 'System Invariants', subtitle: 'Things that must always be true in your system.' },
+                    { key: 'architecture', label: '🏗️ Architecture', title: 'Architecture & Tech Stack', subtitle: 'Patterns, frameworks, and technology choices.' },
+                    { key: 'features', label: '⭐ Features', title: 'Feature List', subtitle: 'Key features and capabilities.' },
+                    { key: 'stories', label: '📖 Stories', title: 'User Stories', subtitle: 'User stories describing desired behavior.' },
+                    { key: 'nfr', label: '📊 NFR', title: 'Non-Functional Requirements', subtitle: 'Performance, security, scalability, etc.' },
+                    { key: 'summary', label: '🔥 Generate', title: 'Review & Generate', subtitle: 'Review your selections and start the forge.' },
+                ];
+
+                let wizardStep = 0;
+                let wizardSuggestions = {};
+                let wizardSelections = {};
+
+                function renderWizard() {
+                    const stepsEl = document.getElementById('wizard-steps');
+                    if (!stepsEl) return;
+                    stepsEl.innerHTML = WIZARD_STAGES.map((s, i) => {
+                        const cls = i === wizardStep ? 'active' : (i < wizardStep ? 'done' : '');
+                        return `<div class="wizard-step ${cls}" onclick="goToWizardStep(${i})">${s.label}</div>`;
+                    }).join('');
+
+                    const contentEl = document.getElementById('wizard-content');
+                    const stage = WIZARD_STAGES[wizardStep];
+
+                    if (stage.key === 'summary') {
+                        renderWizardSummary(contentEl);
+                    } else if (stage.key === 'description') {
+                        renderWizardDescription(contentEl, stage);
+                    } else {
+                        renderWizardCheckboxStage(contentEl, stage);
+                    }
+
+                    document.getElementById('wizard-back').style.display = wizardStep === 0 ? 'none' : '';
+                    document.getElementById('wizard-suggest').style.display = stage.key === 'summary' ? 'none' : '';
+                    document.getElementById('wizard-next').textContent = stage.key === 'summary' ? '🔥 Generate' : 'Save & Next ▶';
+                }
+
+                function renderWizardDescription(el, stage) {
+                    const currentDesc = (currentState.description && currentState.description.main) || '';
+                    let html = `<div class="wizard-title">${stage.title}</div>`;
+                    html += `<div class="wizard-subtitle">${stage.subtitle}</div>`;
+                    html += `<textarea id="idea-input" style="width:100%;min-height:80px;background:#1a1a2e;border:1px solid #444;border-radius:6px;color:#e0e0e0;padding:10px;font-size:13px;resize:vertical;" placeholder="Describe your idea in one sentence...">${escHtml(currentDesc)}</textarea>`;
+
+                    const suggestions = wizardSuggestions['description'];
+                    if (suggestions && suggestions.length > 0) {
+                        html += `<div style="margin-top:16px;font-size:13px;color:#bc8cff;font-weight:600;">Council suggestions — pick one:</div>`;
+                        suggestions.forEach((s, i) => {
+                            const agentMeta = AGENT_META[s.agent] || { icon: 'Ψ', name: s.agent, color: '#888' };
+                            const selected = wizardSelections['description'] === i ? 'selected' : '';
+                            html += `<div class="desc-option ${selected}" onclick="selectDescription(${i})">`;
+                            html += `<span class="agent-badge" style="background:${agentMeta.color}22;color:${agentMeta.color};">${agentMeta.icon} ${agentMeta.name}</span>`;
+                            html += `<p>${escHtml(s.text)}</p>`;
+                            html += `</div>`;
+                        });
+                    }
+
+                    el.innerHTML = html;
+                }
+
+                function selectDescription(idx) {
+                    wizardSelections['description'] = idx;
+                    const suggestions = wizardSuggestions['description'];
+                    if (suggestions && suggestions[idx]) {
+                        document.getElementById('idea-input').value = suggestions[idx].text;
+                    }
+                    renderWizard();
+                }
+
+                function renderWizardCheckboxStage(el, stage) {
+                    const existing = (currentState[stage.key]) || {};
+                    let html = `<div class="wizard-title">${stage.title}</div>`;
+                    html += `<div class="wizard-subtitle">${stage.subtitle}</div>`;
+
+                    if (!wizardSelections[stage.key]) {
+                        wizardSelections[stage.key] = {};
+                        if (typeof existing === 'object' && existing !== null) {
+                            Object.assign(wizardSelections[stage.key], existing);
+                        }
+                    }
+                    const sel = wizardSelections[stage.key];
+
+                    const allKeys = new Set([...Object.keys(sel)]);
+                    const suggestions = wizardSuggestions[stage.key] || [];
+                    suggestions.forEach(s => allKeys.add(s.key));
+
+                    const items = [];
+                    allKeys.forEach(key => {
+                        const fromSuggestion = suggestions.find(s => s.key === key);
+                        const value = sel[key] || (fromSuggestion ? fromSuggestion.value : '');
+                        const agent = fromSuggestion ? fromSuggestion.agent : null;
+                        const checked = key in sel;
+                        items.push({ key, value, agent, checked });
+                    });
+
+                    suggestions.forEach(s => {
+                        if (!allKeys.has(s.key)) {
+                            items.push({ key: s.key, value: s.value, agent: s.agent, checked: false });
+                        }
+                    });
+
+                    if (items.length === 0 && suggestions.length === 0) {
+                        html += `<div style="text-align:center;padding:40px;color:#666;">Click "🏛️ Ask Council" to get suggestions</div>`;
+                    }
+
+                    items.forEach(item => {
+                        const agentBadge = item.agent ? (() => {
+                            const m = AGENT_META[item.agent] || { icon: 'Ψ', name: item.agent, color: '#888' };
+                            return `<span class="agent-badge" style="background:${m.color}22;color:${m.color};">${m.icon}</span>`;
+                        })() : '';
+                        const safeValue = item.value.replace(/'/g, "\\'").replace(/\n/g, ' ');
+                        html += `<div class="suggest-item">`;
+                        html += `<input type="checkbox" ${item.checked ? 'checked' : ''} onchange="toggleSuggestion('${stage.key}', '${item.key}', '${safeValue}', this.checked)" />`;
+                        html += `<div><span class="suggest-key">${escHtml(item.key)}</span>${agentBadge}<br/><span class="suggest-value">${escHtml(item.value)}</span></div>`;
+                        html += `</div>`;
+                    });
+
+                    html += `<div class="custom-add">`;
+                    html += `<input id="custom-key-${stage.key}" placeholder="key" />`;
+                    html += `<input id="custom-val-${stage.key}" placeholder="description" />`;
+                    html += `<button class="btn-sm" onclick="addCustomItem('${stage.key}')">+ Add</button>`;
+                    html += `</div>`;
+
+                    el.innerHTML = html;
+                }
+
+                function toggleSuggestion(stage, key, value, checked) {
+                    if (!wizardSelections[stage]) wizardSelections[stage] = {};
+                    if (checked) {
+                        wizardSelections[stage][key] = value;
+                    } else {
+                        delete wizardSelections[stage][key];
+                    }
+                }
+
+                function addCustomItem(stage) {
+                    const keyEl = document.getElementById('custom-key-' + stage);
+                    const valEl = document.getElementById('custom-val-' + stage);
+                    const key = keyEl.value.trim().toLowerCase().replace(/\s+/g, '-');
+                    const value = valEl.value.trim();
+                    if (!key || !value) return;
+                    if (!wizardSelections[stage]) wizardSelections[stage] = {};
+                    wizardSelections[stage][key] = value;
+                    keyEl.value = '';
+                    valEl.value = '';
+                    renderWizard();
+                }
+
+                function renderWizardSummary(el) {
+                    let html = `<div class="wizard-title">Review & Generate</div>`;
+                    html += `<div class="wizard-subtitle">Review your selections, then generate your application.</div>`;
+
+                    WIZARD_STAGES.forEach(s => {
+                        if (s.key === 'summary') return;
+                        if (s.key === 'description') {
+                            const desc = document.getElementById('idea-input') ? document.getElementById('idea-input').value : ((currentState.description && currentState.description.main) || '');
+                            if (desc) {
+                                html += `<div class="summary-section"><h4>${s.label}</h4><div class="summary-items"><li>${escHtml(desc.substring(0, 200))}${desc.length > 200 ? '...' : ''}</li></div></div>`;
+                            }
+                            return;
+                        }
+                        const items = wizardSelections[s.key] || {};
+                        const keys = Object.keys(items);
+                        if (keys.length > 0) {
+                            html += `<div class="summary-section"><h4>${s.label} (${keys.length})</h4><div class="summary-items">`;
+                            keys.forEach(k => { html += `<li><strong>${escHtml(k)}:</strong> ${escHtml(items[k])}</li>`; });
+                            html += `</div></div>`;
+                        }
+                    });
+
+                    el.innerHTML = html;
+                }
+
+                async function wizardSuggest() {
+                    const stage = WIZARD_STAGES[wizardStep];
+                    if (stage.key === 'summary') return;
+
+                    await wizardSaveCurrentStep();
+
+                    const contentEl = document.getElementById('wizard-content');
+                    contentEl.innerHTML = `<div class="loading-suggestions"><div class="spinner"></div><div style="margin-top:12px;">Council is thinking...</div></div>`;
+
+                    try {
+                        const resp = await apiFetch('/api/council/suggest', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ stage: stage.key })
+                        });
+                        const data = await resp.json();
+                        if (data.ok) {
+                            wizardSuggestions[stage.key] = data.suggestions;
+                        }
+                    } catch (e) {
+                        console.error('Council suggest failed:', e);
+                    }
+
+                    renderWizard();
+                }
+
+                async function wizardSaveCurrentStep() {
+                    const stage = WIZARD_STAGES[wizardStep];
+                    if (stage.key === 'summary') return;
+
+                    const payload = {};
+                    if (stage.key === 'description') {
+                        const val = document.getElementById('idea-input') ? document.getElementById('idea-input').value : '';
+                        payload.description = { main: val };
+                    } else {
+                        payload[stage.key] = wizardSelections[stage.key] || {};
+                    }
+
+                    await apiFetch('/api/state', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                }
+
+                async function wizardNext() {
+                    const stage = WIZARD_STAGES[wizardStep];
+
+                    if (stage.key === 'summary') {
+                        submitPrompt('Generate the application based on the current constraints.');
                         return;
                     }
 
-                    const STRING_LAYERS = ['architectureTweaks']; // single-string layers
+                    await wizardSaveCurrentStep();
 
-                    const groupHtml = group.layers.map(layer => {
-                        // Single-string layer (e.g. architectureTweaks)
-                        if (STRING_LAYERS.includes(layer)) {
-                            const val = currentState[layer] || '';
-                            return `<div class="constraint-section">
-                                <div class="constraint-header" onclick="toggleSection(this)">
-                                    <span>${LAYER_LABELS[layer]}</span>
-                                    <span class="badge">${val.length > 0 ? '✓' : '—'}</span>
-                                </div>
-                                <div class="constraint-body open" id="body-${layer}">
-                                    <div style="padding:4px;">
-                                        <textarea id="string-${layer}" style="width:100%;min-height:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:4px;font-size:12px;resize:vertical;font-family:inherit;"
-                                            placeholder="Enter global ${LAYER_LABELS[layer].toLowerCase()}...">${escHtml(val)}</textarea>
-                                    </div>
-                                    <div class="constraint-actions">
-                                        <button class="btn-sm save" onclick="saveStringLayer('${layer}')">💾 Save</button>
-                                        <button class="btn-sm" onclick="enrichLayer('${layer}', true)" style="color:#f0a0c8;">🏠 Hestia</button>
-                                        <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
-                                    </div>
-                                </div>
-                            </div>`;
-                        }
-
-                        // Dict-based layer (per-file key/value)
-                        const data = currentState[layer] || {};
-                        const entries = Object.entries(data);
-                        return `<div class="constraint-section">
-                            <div class="constraint-header" onclick="toggleSection(this)">
-                                <span>${LAYER_LABELS[layer]}</span>
-                                <span class="badge">${entries.length}</span>
-                            </div>
-                            <div class="constraint-body open" id="body-${layer}">
-                                ${entries.map(([k,v]) => `<div class="constraint-item">
-                                    <input value="${escAttr(k)}" data-layer="${layer}" data-oldkey="${escAttr(k)}" />
-                                    <textarea data-layer="${layer}" data-key="${escAttr(k)}">${escHtml(v)}</textarea>
-                                    <button class="btn-del" onclick="this.parentElement.remove()" title="Remove item">✕</button>
-                                </div>`).join('')}
-                                <div class="constraint-actions" style="position:relative;">
-                                    <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
-                                    <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
-                                    <button class="btn-sm" onclick="enrichLayer('${layer}')" style="color:#f0a0c8;">🏠 Hestia</button>
-                                    <button class="btn-sm" onclick="dedupeLayer('${layer}')" style="color:#58a6ff;">🧹 Dedupe</button>
-                                    <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
-                                    ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
-                                </div>
-                            </div>
-                        </div>`;
-                    }).join('');
-                    el.innerHTML = `<div class="layer-group">
-                        <div class="layer-group-title">${group.icon} ${group.name}</div>
-                        ${groupHtml}
-                    </div>`;
-                    renderPipelineNav();
+                    if (wizardStep < WIZARD_STAGES.length - 1) {
+                        wizardStep++;
+                        renderWizard();
+                    }
                 }
+
+                function wizardBack() {
+                    if (wizardStep > 0) {
+                        wizardStep--;
+                        renderWizard();
+                    }
+                }
+
+                function goToWizardStep(idx) {
+                    if (idx <= wizardStep) {
+                        wizardStep = idx;
+                        renderWizard();
+                    }
+                }
+                // ========== END WIZARD ==========
 
                 async function saveStringLayer(layer) {
                     const val = document.getElementById('string-' + layer).value;
