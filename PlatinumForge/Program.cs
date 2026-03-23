@@ -2234,6 +2234,85 @@ public static class PlatinumForgeServer
             {
                 body = JsonSerializer.Serialize(new { generating = live.Generating });
             }
+            else if (path == "/api/enrich" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var layer = doc.RootElement.GetProperty("layer").GetString() ?? "";
+                var isStringLayer = doc.RootElement.TryGetProperty("isString", out var isl) && isl.GetBoolean();
+
+                // Build full spec context
+                var specGraph = JsonSerializer.Serialize(new {
+                    description = live.State.Description, personas = live.State.Personas,
+                    rules = live.State.Rules, invariants = live.State.Invariants,
+                    architecture = live.State.Architecture, dataflow = live.State.Dataflow,
+                    frameworks = live.State.Frameworks, language = live.State.Language,
+                    deployment = live.State.Deployment, features = live.State.Features,
+                    stories = live.State.Stories, nfr = live.State.NFR,
+                }, new JsonSerializerOptions { WriteIndented = true });
+
+                string currentContent;
+                if (isStringLayer)
+                {
+                    currentContent = layer switch {
+                        "architectureTweaks" => live.State.ArchitectureTweaks,
+                        _ => ""
+                    };
+                }
+                else
+                {
+                    var dict = layer switch {
+                        "description" => live.State.Description, "personas" => live.State.Personas,
+                        "rules" => live.State.Rules, "invariants" => live.State.Invariants,
+                        "architecture" => live.State.Architecture, "dataflow" => live.State.Dataflow,
+                        "frameworks" => live.State.Frameworks, "language" => live.State.Language,
+                        "deployment" => live.State.Deployment, "features" => live.State.Features,
+                        "stories" => live.State.Stories, "nfr" => live.State.NFR,
+                        "codeTweaks" => live.State.CodeTweaks, "testTweaks" => live.State.TestTweaks,
+                        "iac" => live.State.IaC, "deployTweaks" => live.State.DeployTweaks,
+                        _ => null
+                    };
+                    currentContent = dict != null ? JsonSerializer.Serialize(dict) : "{}";
+                }
+
+                try
+                {
+                    var enriched = await OpenAIClient.Complete(
+                        """
+                        You are a product design enrichment assistant for PlatinumForge by WaveFunctionLabs.
+                        Your job is to take rough, half-formed ideas and sharpen them into clear, actionable specifications.
+
+                        Rules:
+                        - Expand vague ideas into specific, concrete items
+                        - Split compound ideas into separate well-defined entries
+                        - Add missing considerations the user likely hasn't thought of
+                        - Improve wording to be precise and unambiguous
+                        - Preserve the user's intent — enhance, don't replace
+                        - Keep each value concise (1-3 sentences max)
+                        - Output ONLY valid JSON, no markdown fences, no explanation
+                        """,
+                        $"""
+                        Full project specification for context:
+                        {specGraph}
+
+                        The user wants to enrich the "{layer}" layer.
+                        Current content of this layer:
+                        {currentContent}
+
+                        {(isStringLayer
+                            ? "This is a free-text field. Return a JSON object: {\"value\": \"enriched text here\"}"
+                            : "This is a key-value dictionary. Return a JSON object with enriched/expanded key-value pairs. Keep existing good entries, improve weak ones, split compound ones, and add missing entries that make sense for this project."
+                        )}
+                        """);
+
+                    var stripped = Generator.StripMarkdownFences(enriched);
+                    body = JsonSerializer.Serialize(new { ok = true, result = stripped, layer });
+                }
+                catch (Exception ex)
+                {
+                    body = JsonSerializer.Serialize(new { ok = false, error = ex.Message });
+                }
+            }
             else if (path == "/api/commit" && method == "POST")
             {
                 var file = CommitLiveToDisk(meta);
@@ -4092,6 +4171,7 @@ public static class PlatinumForgeServer
                                     </div>
                                     <div class="constraint-actions">
                                         <button class="btn-sm save" onclick="saveStringLayer('${layer}')">💾 Save</button>
+                                        <button class="btn-sm" onclick="enrichLayer('${layer}', true)" style="color:#a78bfa;">✨ Enrich</button>
                                     </div>
                                 </div>
                             </div>`;
@@ -4113,6 +4193,7 @@ public static class PlatinumForgeServer
                                 <div class="constraint-actions" style="position:relative;">
                                     <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
                                     <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
+                                    <button class="btn-sm" onclick="enrichLayer('${layer}')" style="color:#a78bfa;">✨ Enrich</button>
                                     ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
                                 </div>
                             </div>
@@ -4132,6 +4213,58 @@ public static class PlatinumForgeServer
                     payload[layer] = val;
                     await apiFetch('/api/state', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                     renderPipelineNav();
+                }
+
+                async function enrichLayer(layer, isString = false) {
+                    // Save current state first
+                    if (isString) {
+                        await saveStringLayer(layer);
+                    } else {
+                        await saveConstraints(layer);
+                    }
+
+                    // Find and update the enrich button
+                    const bodyEl = document.getElementById('body-' + layer);
+                    const enrichBtn = bodyEl?.querySelector('[onclick*="enrichLayer"]');
+                    const origText = enrichBtn?.textContent;
+                    if (enrichBtn) { enrichBtn.textContent = '⏳ Enriching...'; enrichBtn.disabled = true; }
+
+                    try {
+                        const r = await apiFetch('/api/enrich', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ layer, isString })
+                        });
+                        const d = await r.json();
+                        if (!d.ok) { throw new Error(d.error || 'Enrich failed'); }
+
+                        const parsed = JSON.parse(d.result);
+
+                        if (isString) {
+                            currentState[layer] = parsed.value || d.result;
+                            await saveStringLayer(layer);
+                        } else {
+                            // Merge enriched entries into current state
+                            if (!currentState[layer]) currentState[layer] = {};
+                            Object.assign(currentState[layer], parsed);
+                            await apiFetch('/api/state', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ [layer]: currentState[layer] })
+                            });
+                        }
+
+                        renderConstraints();
+                        // Ensure section stays open
+                        const newBody = document.getElementById('body-' + layer);
+                        if (newBody) newBody.classList.add('open');
+
+                        appendChatEntry('system', `✨ Enriched ${layer}: ${Object.keys(parsed).length} items`);
+                    } catch (ex) {
+                        appendChatEntry('error', `Enrich failed: ${ex.message}`);
+                    } finally {
+                        if (enrichBtn) { enrichBtn.textContent = origText; enrichBtn.disabled = false; }
+                    }
                 }
 
                 function toggleSection(header) {
