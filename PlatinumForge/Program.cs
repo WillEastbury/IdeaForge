@@ -72,6 +72,7 @@ public class SystemState
     };
 
     // 4. Forge (LLM-generated)
+    public Dictionary<string, string> FileManifest { get; set; } = new();
     public Dictionary<string, string> Interfaces { get; set; } = new();
     public Dictionary<string, string> UnitTests { get; set; } = new();
     public Dictionary<string, string> Code { get; set; } = new();
@@ -115,6 +116,7 @@ public class SystemState
             Stories = new(Stories),
             NFR = new(NFR),
             Sliders = new(Sliders),
+            FileManifest = new(FileManifest),
             Interfaces = new(Interfaces),
             UnitTests = new(UnitTests),
             Code = new(Code),
@@ -301,9 +303,10 @@ public static class CodeCompiler
             sb.AppendLine();
         }
 
-        // Code implementations
+        // Code implementations (skip Program.cs for compilation — it has Main)
         foreach (var (name, src) in state.Code)
         {
+            if (name.Equals("Program.cs", StringComparison.OrdinalIgnoreCase)) continue;
             sb.AppendLine($"// ── Code: {name}");
             sb.AppendLine(src);
             sb.AppendLine();
@@ -551,13 +554,16 @@ public static class Generator
 
         var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "unit"));
         code = StripMarkdownFences(code);
-        return new Dictionary<string, string> { ["core-tests"] = code };
+        return new Dictionary<string, string> { ["CoreTests.cs"] = code };
     }
 
     public static async Task<Dictionary<string, string>> GenerateInterfaces(SystemState state)
     {
         var context = PromptBuilder.BuildContext(state);
         var tests = string.Join("\n", state.UnitTests.Values);
+        var manifestHint = state.FileManifest.Count > 0
+            ? "File manifest for reference:\n" + string.Join("\n", state.FileManifest.Where(kv => kv.Key.Contains("Interface") || kv.Key.EndsWith(".cs")).Select(kv => $"- {kv.Key}: {kv.Value}"))
+            : "";
         var prompt =
             $"""
             Given these requirements:
@@ -566,14 +572,33 @@ public static class Generator
             And these tests that must pass:
             {tests}
 
+            {manifestHint}
+
             Generate C# interface definitions that the tests reference.
-            Output ONLY interface declarations (public interface IXxx).
-            No class implementations, no using statements, no namespace.
+            Return a JSON object where each key is a filename (e.g. "IUserService.cs", "ICalculator.cs") 
+            and each value is the complete C# interface code for that file.
+            
+            Each interface should be in its own file. Include enums in separate files if needed.
+            No using statements, no namespace wrapper — those will be added by the compiler.
+            
+            Output ONLY valid JSON. No markdown fences.
             """;
 
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "interfaces"));
-        code = StripMarkdownFences(code);
-        return new Dictionary<string, string> { ["core-interfaces"] = code };
+        var raw = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "interfaces"));
+        raw = StripMarkdownFences(raw);
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var result = new Dictionary<string, string>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                result[prop.Name] = prop.Value.GetString() ?? "";
+            return result;
+        }
+        catch
+        {
+            // Fallback: single file
+            return new Dictionary<string, string> { ["Interfaces.cs"] = raw };
+        }
     }
 
     public static async Task<Dictionary<string, string>> GenerateCode(SystemState state, string? previousCode = null, string[]? compileErrors = null, List<(string Name, bool Passed, string Msg)>? testResults = null)
@@ -617,24 +642,53 @@ public static class Generator
             }
         }
 
+        var interfacesList = string.Join("\n", state.Interfaces.Select(kv => $"── {kv.Key} ──\n{kv.Value}"));
+        var manifestHint = state.FileManifest.Count > 0
+            ? "File manifest for reference:\n" + string.Join("\n", state.FileManifest.Where(kv => !kv.Key.Contains("Interface")).Select(kv => $"- {kv.Key}: {kv.Value}"))
+            : "";
+
         var prompt =
             $"""
             Given this full system context:
             {context}
             {errorFeedback}
 
+            These interfaces are defined:
+            {interfacesList}
+
+            {manifestHint}
+
             Generate C# class implementations that:
             1. Implement all interfaces defined above
             2. Make all tests pass
             3. Follow the rules, architecture, and NFR constraints
+            4. Include a Program.cs with Main method, DI registration, and HTTP pipeline setup
+            5. Include any enums, models, DTOs, extension methods, middleware, and static helpers needed
 
-            Output ONLY class declarations (public class Xxx : IXxx).
-            No interfaces, no using statements, no namespace, no Main method.
+            Return a JSON object where each key is a filename (e.g. "Program.cs", "UserService.cs", "StringExtensions.cs")
+            and each value is the complete C# code for that file.
+
+            Do NOT include interface definitions (those are already generated).
+            No using statements or namespace wrapper in individual files — the compiler adds those.
+            EXCEPTION: Program.cs SHOULD include using statements and namespace since it's the entry point.
+
+            Output ONLY valid JSON. No markdown fences.
             """;
 
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "code"));
-        code = StripMarkdownFences(code);
-        return new Dictionary<string, string> { ["core-impl"] = code };
+        var raw = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "code"));
+        raw = StripMarkdownFences(raw);
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var result = new Dictionary<string, string>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                result[prop.Name] = prop.Value.GetString() ?? "";
+            return result;
+        }
+        catch
+        {
+            return new Dictionary<string, string> { ["Implementation.cs"] = raw };
+        }
     }
 
     public static async Task<Dictionary<string, string>> GenerateNfrTests(SystemState state)
@@ -760,6 +814,47 @@ public static class Generator
         catch
         {
             return new Dictionary<string, string> { ["iac-output"] = raw };
+        }
+    }
+
+    public static async Task<Dictionary<string, string>> GenerateFileManifest(SystemState state)
+    {
+        var context = PromptBuilder.BuildContext(state);
+        var prompt = $"""
+            Given these requirements:
+            {context}
+
+            Plan the file structure for a C# project. List every source file needed.
+            Categorise each file into one of: Interfaces, Enums, Models, Services, Extensions, Statics, Controllers, Middleware, Program, Content, Config
+            
+            Return a JSON object where keys are file paths (e.g. "Interfaces/IUserService.cs") and values describe what the file contains.
+            Include:
+            - Interface files (one per interface, in Interfaces/)
+            - Enum files (in Enums/)
+            - Model/DTO files (in Models/)
+            - Service implementation files (in Services/)
+            - Extension method files (in Extensions/)
+            - Static helper files (in Statics/)
+            - Controller/endpoint files (in Controllers/)
+            - Middleware files (in Middleware/)
+            - Program.cs (startup, DI registration, pipeline config)
+            - Any content/config files needed
+
+            Output ONLY valid JSON. No markdown fences.
+            """;
+        var raw = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        raw = StripMarkdownFences(raw);
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var result = new Dictionary<string, string>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                result[prop.Name] = prop.Value.GetString() ?? "";
+            return result;
+        }
+        catch
+        {
+            return new Dictionary<string, string> { ["manifest-error"] = raw };
         }
     }
 
@@ -1511,6 +1606,7 @@ public static class PlatinumForgeServer
                 ["sliders"] = state.Sliders,
                 ["tests"] = state.UnitTests,
                 ["interfaces"] = state.Interfaces,
+                ["fileManifest"] = state.FileManifest,
                 ["code"] = state.Code,
                 ["nfrTests"] = state.NfrTests,
                 ["soakTests"] = state.SoakTests,
@@ -1556,6 +1652,7 @@ public static class PlatinumForgeServer
                 if (root.TryGetProperty("sliders", out var sl)) s.Sliders = JsonToIntDict(sl);
                 if (root.TryGetProperty("tests", out var t)) s.UnitTests = JsonToDict(t);
                 if (root.TryGetProperty("interfaces", out var ifc)) s.Interfaces = JsonToDict(ifc);
+                if (root.TryGetProperty("fileManifest", out var fm)) s.FileManifest = JsonToDict(fm);
                 if (root.TryGetProperty("code", out var c)) s.Code = JsonToDict(c);
                 if (root.TryGetProperty("nfrTests", out var nfrT)) s.NfrTests = JsonToDict(nfrT);
                 if (root.TryGetProperty("soakTests", out var soakT)) s.SoakTests = JsonToDict(soakT);
@@ -1877,6 +1974,7 @@ public static class PlatinumForgeServer
                         sliders = live.State.Sliders,
                         tests = live.State.UnitTests,
                         interfaces = live.State.Interfaces,
+                        fileManifest = live.State.FileManifest,
                         code = live.State.Code,
                         nfrTests = live.State.NfrTests,
                         soakTests = live.State.SoakTests,
@@ -1951,6 +2049,7 @@ public static class PlatinumForgeServer
                     sliders = live.State.Sliders,
                     tests = live.State.UnitTests,
                     interfaces = live.State.Interfaces,
+                    fileManifest = live.State.FileManifest,
                     code = live.State.Code,
                     nfrTests = live.State.NfrTests,
                     soakTests = live.State.SoakTests,
@@ -1989,6 +2088,7 @@ public static class PlatinumForgeServer
                 if (root.TryGetProperty("iac", out var iac)) { live.State.IaC = JsonToDict(iac); delta["iac"] = live.State.IaC; }
                 if (root.TryGetProperty("deployTweaks", out var dtw)) { live.State.DeployTweaks = JsonToDict(dtw); delta["deployTweaks"] = live.State.DeployTweaks; }
                 if (root.TryGetProperty("pipelineConfig", out var pcfg)) { live.State.PipelineConfig = JsonToBoolDict(pcfg); delta["pipelineConfig"] = live.State.PipelineConfig; }
+                if (root.TryGetProperty("fileManifest", out var fmn)) { live.State.FileManifest = JsonToDict(fmn); delta["fileManifest"] = live.State.FileManifest; }
                 live.AddChat("system", "🔧 Constraints updated");
                 _ = live.Broadcast("state", delta, clientId);
                 _ = live.Broadcast("chat", new { role = "system", message = "🔧 Constraints updated" }, clientId);
@@ -2492,15 +2592,22 @@ public static class PlatinumForgeServer
             }
             else if (path == "/api/store/tree" && method == "GET")
             {
-                // Only show generated artifacts, not configuration layers
                 var tree = new Dictionary<string, List<string>>();
-                if (live.State.Interfaces.Count > 0) tree["Interfaces"] = live.State.Interfaces.Keys.ToList();
-                if (live.State.UnitTests.Count > 0) tree["UnitTests"] = live.State.UnitTests.Keys.ToList();
-                if (live.State.Code.Count > 0) tree["Code"] = live.State.Code.Keys.ToList();
-                if (live.State.NfrTests.Count > 0) tree["NfrTests"] = live.State.NfrTests.Keys.ToList();
-                if (live.State.SoakTests.Count > 0) tree["SoakTests"] = live.State.SoakTests.Keys.ToList();
-                if (live.State.IntegrationTests.Count > 0) tree["IntegrationTests"] = live.State.IntegrationTests.Keys.ToList();
-                if (live.State.IaC.Count > 0) tree["IaC"] = live.State.IaC.Keys.ToList();
+                
+                // File manifest (planning)
+                if (live.State.FileManifest.Count > 0) tree["📋 Manifest"] = live.State.FileManifest.Keys.ToList();
+                
+                // Group generated files by folder prefix or category
+                void AddFiles(string category, Dictionary<string, string> dict) {
+                    if (dict.Count > 0) tree[category] = dict.Keys.ToList();
+                }
+                AddFiles("Interfaces", live.State.Interfaces);
+                AddFiles("UnitTests", live.State.UnitTests);
+                AddFiles("Code", live.State.Code);
+                AddFiles("NfrTests", live.State.NfrTests);
+                AddFiles("SoakTests", live.State.SoakTests);
+                AddFiles("IntegrationTests", live.State.IntegrationTests);
+                AddFiles("IaC", live.State.IaC);
                 body = JsonSerializer.Serialize(tree);
             }
             else if (path == "/api/store/file" && method == "GET")
@@ -2524,6 +2631,7 @@ public static class PlatinumForgeServer
                     "stories" => live.State.Stories,
                     "tests" or "unittests" => live.State.UnitTests,
                     "interfaces" => live.State.Interfaces,
+                    "filemanifest" => live.State.FileManifest,
                     "code" => live.State.Code,
                     "nfrtests" => live.State.NfrTests,
                     "soaktests" => live.State.SoakTests,
@@ -2709,6 +2817,13 @@ public static class PlatinumForgeServer
                 }
                 catch { await BroadcastChat(live, "system", "ℹ️ Proceeding with current constraints"); }
             }
+
+            // Generate file manifest (plan the project structure)
+            await BroadcastProgress(live, 0, 9, "Planning", "running", "Planning project file structure...");
+            await BroadcastChat(live, "system", "📋 Planning file structure...");
+            live.State.FileManifest = await Generator.GenerateFileManifest(live.State);
+            await BroadcastProgress(live, 0, 9, "Planning", "done", $"{live.State.FileManifest.Count} files planned");
+            await BroadcastChat(live, "system", $"📋 File manifest: {live.State.FileManifest.Count} files planned");
 
             // Stage 1: Interfaces
             if (StageEnabled(live, "interfaces")) {
@@ -3144,15 +3259,33 @@ public static class PlatinumForgeServer
             // Write generated source
             File.WriteAllText(Path.Combine(tempDir, "generated.cs"), live.CurrentSource);
 
-            // Write individual layers
+            // Write individual source files  
             var srcDir = Path.Combine(tempDir, "src");
             Directory.CreateDirectory(srcDir);
             foreach (var (name, src) in live.State.Interfaces)
-                File.WriteAllText(Path.Combine(srcDir, $"interface-{name}.cs"), src);
+            {
+                var dir = Path.Combine(srcDir, "Interfaces");
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, SanitizeFilename(name)), src);
+            }
             foreach (var (name, src) in live.State.Code)
-                File.WriteAllText(Path.Combine(srcDir, $"impl-{name}.cs"), src);
+            {
+                // Put Program.cs at root, others in appropriate folders
+                if (name.Equals("Program.cs", StringComparison.OrdinalIgnoreCase))
+                    File.WriteAllText(Path.Combine(srcDir, name), src);
+                else
+                {
+                    var dir = Path.Combine(srcDir, "Services");
+                    Directory.CreateDirectory(dir);
+                    File.WriteAllText(Path.Combine(dir, SanitizeFilename(name)), src);
+                }
+            }
             foreach (var (name, src) in live.State.UnitTests)
-                File.WriteAllText(Path.Combine(srcDir, $"test-{name}.cs"), src);
+            {
+                var dir = Path.Combine(srcDir, "Tests");
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, SanitizeFilename(name)), src);
+            }
 
             // Write external test files
             var testsDir = Path.Combine(tempDir, "tests");
@@ -3398,13 +3531,13 @@ public static class PlatinumForgeServer
                 .btn-secondary:hover { border-color: var(--accent); }
 
                 /* Chat Flyout */
-                #chat-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
-                #chat-flyout { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; background: var(--surface); border-left: 2px solid var(--accent); z-index: 1000; display: flex; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.4); }
-                #chat-flyout #chat { flex: 1; overflow-y: auto; padding: 8px; }
-                #chat-flyout #prompt-area { border-top: 1px solid var(--border); padding: 10px; }
-                #chat-flyout #prompt-area textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 6px; font-size: 13px; resize: vertical; font-family: inherit; }
-                #chat-flyout #prompt-area textarea:focus { border-color: var(--accent); outline: none; }
-                #chat-flyout #prompt-actions { display: flex; gap: 6px; margin-top: 6px; }
+                #chat-panel { width: 340px; min-width: 280px; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); overflow: hidden; }
+                #chat-panel .chat-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: linear-gradient(135deg, #1a1a2e, #16213e); border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 700; color: var(--accent); }
+                #chat-panel #chat { flex: 1; overflow-y: auto; padding: 8px; }
+                #chat-panel #prompt-area { border-top: 1px solid var(--border); padding: 10px; }
+                #chat-panel #prompt-area textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 6px; font-size: 13px; resize: vertical; font-family: inherit; }
+                #chat-panel #prompt-area textarea:focus { border-color: var(--accent); outline: none; }
+                #chat-panel #prompt-actions { display: flex; gap: 6px; margin-top: 6px; }
                 /* Chat entries */
                 .chat-entry { padding: 6px 10px; margin-bottom: 4px; border-radius: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
                 .chat-entry.user { background: rgba(59,130,246,0.1); border-left: 3px solid var(--accent); }
@@ -3464,7 +3597,7 @@ public static class PlatinumForgeServer
                 .btn-sessions:hover { filter: brightness(1.15); transform: translateY(-1px); }
 
                 /* Session Flyout */
-                #session-overlay, #share-overlay, #builds-overlay, #chat-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
+                #session-overlay, #share-overlay, #builds-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
                 #session-flyout { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; background: var(--surface); border-left: 2px solid var(--purple); z-index: 1000; display: flex; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.4); }
                 .flyout-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, #1a1a2e, #16213e); border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 700; color: var(--purple); }
                 .flyout-close { background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
@@ -3524,7 +3657,6 @@ public static class PlatinumForgeServer
                         onchange="updateProjectMeta()" />
                 </div>
                 <div class="header-status">
-                    <button class="btn" style="font-size:12px;" onclick="toggleChatFlyout()">💬 Chat</button>
                     <button class="btn" style="font-size:12px;" onclick="toggleBuildsFlyout()">📦 Builds</button>
                     <button class="btn" style="font-size:12px;" onclick="exportDefinitions()">📤 Export</button>
                     <button class="btn" style="font-size:12px;" onclick="importDefinitions()">📥 Import</button>
@@ -3601,27 +3733,25 @@ public static class PlatinumForgeServer
                     <button class="btn btn-secondary" onclick="closeShareDialog()">Close</button>
                     <button class="btn btn-primary" onclick="copyShareUrl()">📋 Copy</button>
                 </div>
-            </div>
-
-            <!-- Chat Flyout -->
-            <div id="chat-overlay" onclick="toggleChatFlyout()" style="display:none;"></div>
-            <div id="chat-flyout" style="display:none;">
-                <div class="flyout-header">
-                    <span>💬 Chat</span>
-                    <button class="flyout-close" onclick="toggleChatFlyout()">✕</button>
-                </div>
-                <div id="chat"></div>
-                <div id="prompt-area">
-                    <textarea id="prompt-input" rows="2" placeholder="Chat with the agent about your design, or describe what to build..."></textarea>
-                    <div id="prompt-actions">
-                        <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">💬 Send</button>
-                        <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">Ψ Generate</button>
-                        <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
+                <!-- Chat Panel -->
+                <div id="chat-panel">
+                    <div class="chat-panel-header">
+                        <span>Ψ Psi</span>
+                        <span style="font-size:10px;color:var(--text-dim);font-weight:400;">AI Design Agent</span>
+                    </div>
+                    <div id="chat"></div>
+                    <div id="prompt-area">
+                        <textarea id="prompt-input" rows="2" placeholder="Ask Psi about your design, or describe what to build..."></textarea>
+                        <div id="prompt-actions">
+                            <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">Ψ Send</button>
+                            <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">🔥 Generate</button>
+                            <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Builds Flyout -->
+            <!-- Session Flyout -->
             <div id="builds-overlay" onclick="toggleBuildsFlyout()" style="display:none;"></div>
             <div id="builds-flyout" style="display:none; position:fixed; right:0; top:0; bottom:0; width:380px; background:var(--surface); border-left:2px solid var(--accent); z-index:1000; overflow-y:auto; box-shadow:-4px 0 24px rgba(0,0,0,0.3);">
                 <div class="flyout-header">
@@ -3878,7 +4008,9 @@ public static class PlatinumForgeServer
                     const t = new Date().toLocaleTimeString();
                     const div = document.createElement('div');
                     div.className = `chat-entry ${role}`;
-                    div.innerHTML = `<div class="chat-time">${t}</div>${escHtml(message)}${actionsHtml}`;
+                    const label = role === 'agent' ? '<div style="font-size:10px;font-weight:700;color:var(--purple);margin-bottom:2px;">Ψ Psi</div>' :
+                                  role === 'user' ? '<div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:2px;">You</div>' : '';
+                    div.innerHTML = `<div class="chat-time">${t}</div>${label}${escHtml(message)}${actionsHtml}`;
                     el.appendChild(div);
                     el.scrollTop = el.scrollHeight;
                     lastChatLen++;
@@ -4730,20 +4862,6 @@ public static class PlatinumForgeServer
                     } catch {}
                 }
 
-                // ── Chat Flyout ──
-                let chatFlyoutOpen = false;
-
-                function toggleChatFlyout() {
-                    chatFlyoutOpen = !chatFlyoutOpen;
-                    document.getElementById('chat-flyout').style.display = chatFlyoutOpen ? 'flex' : 'none';
-                    document.getElementById('chat-overlay').style.display = chatFlyoutOpen ? 'block' : 'none';
-                    if (chatFlyoutOpen) {
-                        const el = document.getElementById('chat');
-                        el.scrollTop = el.scrollHeight;
-                        document.getElementById('prompt-input').focus();
-                    }
-                }
-
                 // ── Sessions ──
                 let sessionFlyoutOpen = false;
 
@@ -4978,6 +5096,9 @@ public static class PlatinumForgeServer
         </body>
         </html>
         """.Replace("%%FAVICON%%", FaviconLink).Replace("%%PSILOGO%%", PsiLogoSvg);
+
+    private static string SanitizeFilename(string name) =>
+        System.Text.RegularExpressions.Regex.Replace(name, @"[^\w\-. ]", "_");
 
     public static void Stop()
     {
