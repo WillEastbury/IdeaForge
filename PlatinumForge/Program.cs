@@ -2327,32 +2327,15 @@ public static class PlatinumForgeServer
             }
             else if (path == "/api/store/tree" && method == "GET")
             {
-                var tree = new Dictionary<string, List<string>>
-                {
-                    ["Description"] = live.State.Description.Keys.ToList(),
-                    ["Personas"] = live.State.Personas.Keys.ToList(),
-                    ["Rules"] = live.State.Rules.Keys.ToList(),
-                    ["Invariants"] = live.State.Invariants.Keys.ToList(),
-                    ["Architecture"] = live.State.Architecture.Keys.ToList(),
-                    ["Dataflow"] = live.State.Dataflow.Keys.ToList(),
-                    ["Frameworks"] = live.State.Frameworks.Keys.ToList(),
-                    ["Language"] = live.State.Language.Keys.ToList(),
-                    ["Deployment"] = live.State.Deployment.Keys.ToList(),
-                    ["Features"] = live.State.Features.Keys.ToList(),
-                    ["NFR"] = live.State.NFR.Keys.ToList(),
-                    ["Sliders"] = live.State.Sliders.Keys.ToList(),
-                    ["Stories"] = live.State.Stories.Keys.ToList(),
-                    ["UnitTests"] = live.State.UnitTests.Keys.ToList(),
-                    ["Interfaces"] = live.State.Interfaces.Keys.ToList(),
-                    ["Code"] = live.State.Code.Keys.ToList(),
-                    ["NfrTests"] = live.State.NfrTests.Keys.ToList(),
-                    ["SoakTests"] = live.State.SoakTests.Keys.ToList(),
-                    ["IntegrationTests"] = live.State.IntegrationTests.Keys.ToList(),
-                    ["CodeTweaks"] = live.State.CodeTweaks.Keys.ToList(),
-                    ["TestTweaks"] = live.State.TestTweaks.Keys.ToList(),
-                    ["IaC"] = live.State.IaC.Keys.ToList(),
-                    ["DeployTweaks"] = live.State.DeployTweaks.Keys.ToList(),
-                };
+                // Only show generated artifacts, not configuration layers
+                var tree = new Dictionary<string, List<string>>();
+                if (live.State.Interfaces.Count > 0) tree["Interfaces"] = live.State.Interfaces.Keys.ToList();
+                if (live.State.UnitTests.Count > 0) tree["UnitTests"] = live.State.UnitTests.Keys.ToList();
+                if (live.State.Code.Count > 0) tree["Code"] = live.State.Code.Keys.ToList();
+                if (live.State.NfrTests.Count > 0) tree["NfrTests"] = live.State.NfrTests.Keys.ToList();
+                if (live.State.SoakTests.Count > 0) tree["SoakTests"] = live.State.SoakTests.Keys.ToList();
+                if (live.State.IntegrationTests.Count > 0) tree["IntegrationTests"] = live.State.IntegrationTests.Keys.ToList();
+                if (live.State.IaC.Count > 0) tree["IaC"] = live.State.IaC.Keys.ToList();
                 body = JsonSerializer.Serialize(tree);
             }
             else if (path == "/api/store/file" && method == "GET")
@@ -3937,8 +3920,19 @@ public static class PlatinumForgeServer
                 }
 
                 function renderSliders() {
-                    // Only re-render if quality stage is active (sliders are in constraints panel now)
-                    if (activeStage === 4) renderConstraints();
+                    if (activeStage === 4) {
+                        const el = document.getElementById('constraints');
+                        if (el) {
+                            // Update slider values in-place if already rendered
+                            const sliders = currentState.sliders || {};
+                            el.querySelectorAll('input[type=range][data-slider]').forEach(inp => {
+                                const val = sliders[inp.dataset.slider] ?? 50;
+                                inp.value = val;
+                                const valSpan = inp.nextElementSibling;
+                                if (valSpan) valSpan.textContent = val;
+                            });
+                        }
+                    }
                 }
 
                 async function saveSliders() {
@@ -4047,7 +4041,6 @@ public static class PlatinumForgeServer
 
                     // Stage 4 = Quality Sliders + Pipeline Config
                     if (activeStage === 4) {
-                        renderSliders();
                         const slidersHtml = buildSlidersHtml();
                         const pipelineHtml = buildPipelineConfigHtml();
                         el.innerHTML = `<div class="layer-group" style="padding:8px;">
@@ -4177,7 +4170,7 @@ public static class PlatinumForgeServer
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ [layer]: data })
                     });
-                    await refreshState();
+                    renderPipelineNav();
                 }
 
                 async function submitPrompt(override) {
