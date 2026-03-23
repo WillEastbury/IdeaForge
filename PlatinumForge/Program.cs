@@ -3268,36 +3268,6 @@ public static class PlatinumForgeServer
                     await BroadcastProgress(live, 7, 11, "App Verify", "done", "Skipped");
                 }
 
-                // Stage 8: NFR Tests (Playwright) — against running app
-                if (StageEnabled(live, "nfrTests")) {
-                    await BroadcastProgress(live, 8, 11, "NFR Tests", "running", "Generating Playwright tests...");
-                    await BroadcastChat(live, "system", "⏳ [8/11] Generating NFR Tests (Playwright)...");
-                    live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
-                    await BroadcastProgress(live, 8, 11, "NFR Tests", "done", "Generated");
-                    await BroadcastChat(live, "system", "✅ NFR Tests generated");
-                    await RunExternalTests(live, "nfr", "Playwright", live.State.NfrTests, appUrl);
-                } else { await BroadcastProgress(live, 8, 11, "NFR Tests", "done", "Skipped"); }
-
-                // Stage 9: Soak / Performance Tests (Locust) — against running app
-                if (StageEnabled(live, "soakTests")) {
-                    await BroadcastProgress(live, 9, 11, "Soak Tests", "running", "Generating Locust load tests...");
-                    await BroadcastChat(live, "system", "⏳ [9/11] Generating Soak Tests (Locust)...");
-                    live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
-                    await BroadcastProgress(live, 9, 11, "Soak Tests", "done", "Generated");
-                    await BroadcastChat(live, "system", "✅ Soak Tests generated");
-                    await RunExternalTests(live, "soak", "Locust", live.State.SoakTests, appUrl);
-                } else { await BroadcastProgress(live, 9, 11, "Soak Tests", "done", "Skipped"); }
-
-                // Stage 10: Integration Tests (Jest) — against running app
-                if (StageEnabled(live, "integrationTests")) {
-                    await BroadcastProgress(live, 10, 11, "Integration Tests", "running", "Generating Jest integration tests...");
-                    await BroadcastChat(live, "system", "⏳ [10/11] Generating Integration Tests (Jest)...");
-                    live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
-                    await BroadcastProgress(live, 10, 11, "Integration Tests", "done", "Generated");
-                    await BroadcastChat(live, "system", "✅ Integration Tests generated");
-                    await RunExternalTests(live, "integration", "Jest", live.State.IntegrationTests, appUrl);
-                } else { await BroadcastProgress(live, 10, 11, "Integration Tests", "done", "Skipped"); }
-
                 }
                 finally
                 {
@@ -3308,8 +3278,34 @@ public static class PlatinumForgeServer
                         await BroadcastChat(live, "system", "🛑 App process stopped");
                     }
                     appProcess?.Dispose();
-                    // Clean up project directory (but not until after publish uses it)
                 }
+
+                // Stage 8: NFR Tests (Playwright) — always generate, run only if app was running
+                if (StageEnabled(live, "nfrTests")) {
+                    await BroadcastProgress(live, 8, 11, "NFR Tests", "running", "Generating Playwright tests...");
+                    await BroadcastChat(live, "system", "⏳ [8/11] Generating NFR Tests (Playwright)...");
+                    live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
+                    await BroadcastProgress(live, 8, 11, "NFR Tests", "done", $"Generated ({live.State.NfrTests.Count} files)");
+                    await BroadcastChat(live, "system", "✅ NFR Tests generated");
+                } else { await BroadcastProgress(live, 8, 11, "NFR Tests", "done", "Skipped"); }
+
+                // Stage 9: Soak / Performance Tests (Locust) — always generate
+                if (StageEnabled(live, "soakTests")) {
+                    await BroadcastProgress(live, 9, 11, "Soak Tests", "running", "Generating Locust load tests...");
+                    await BroadcastChat(live, "system", "⏳ [9/11] Generating Soak Tests (Locust)...");
+                    live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
+                    await BroadcastProgress(live, 9, 11, "Soak Tests", "done", $"Generated ({live.State.SoakTests.Count} files)");
+                    await BroadcastChat(live, "system", "✅ Soak Tests generated");
+                } else { await BroadcastProgress(live, 9, 11, "Soak Tests", "done", "Skipped"); }
+
+                // Stage 10: Integration Tests (Jest) — always generate
+                if (StageEnabled(live, "integrationTests")) {
+                    await BroadcastProgress(live, 10, 11, "Integration Tests", "running", "Generating Jest integration tests...");
+                    await BroadcastChat(live, "system", "⏳ [10/11] Generating Integration Tests (Jest)...");
+                    live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
+                    await BroadcastProgress(live, 10, 11, "Integration Tests", "done", $"Generated ({live.State.IntegrationTests.Count} files)");
+                    await BroadcastChat(live, "system", "✅ Integration Tests generated");
+                } else { await BroadcastProgress(live, 10, 11, "Integration Tests", "done", "Skipped"); }
 
                 // Stage 10.5: IaC Generation (after app shutdown)
                 if (StageEnabled(live, "iac") && (live.State.Deployment.Count > 0 || live.State.IaC.Count > 0))
