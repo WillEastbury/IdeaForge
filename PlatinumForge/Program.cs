@@ -3552,6 +3552,60 @@ public static class PlatinumForgeServer
         }
 
         var summary = vetoed ? "🚫 Council VETOED — pipeline paused" : "✅ Council approved — proceeding";
+
+        // Zeus arbitration: if agents disagree (mix of VETO/CONCERN and APPROVE), Zeus makes the final call
+        bool hasVeto = reviews.Any(r => r.Verdict == "VETO");
+        bool hasConcern = reviews.Any(r => r.Verdict == "CONCERN");
+        bool hasApprove = reviews.Any(r => r.Verdict == "APPROVE");
+        bool disagreement = hasVeto && hasApprove;
+
+        if (disagreement)
+        {
+            await BroadcastChat(live, "system", "⚡ Council disagreement detected — Zeus is arbitrating...");
+            var reviewSummary = string.Join("\n", reviews.Select(r => $"  {r.Agent}: [{r.Verdict}] {r.Message}"));
+            var zeusPrompt = $"""
+                The Design Council has reviewed pipeline stage "{completedStage}" and agents DISAGREE.
+
+                Agent reviews:
+                {reviewSummary}
+
+                Stage output:
+                {stageOutput}
+
+                As Zeus, the Arbiter, you must make the FINAL decision. Consider all perspectives.
+                If any VETO raises a genuine blocker (constraint violation, missing critical requirement, stage boundary breach), uphold it.
+                If VETOs are overly cautious or based on preferences rather than violations, override them.
+
+                Respond with ONLY valid JSON:
+                {"{"}
+                  "verdict": "APPROVE" or "VETO",
+                  "message": "Your ruling and reasoning (2-3 sentences)"
+                {"}"}
+                """;
+
+            try
+            {
+                var zeusResponse = await OpenAIClient.Complete(
+                    "You are Zeus, the supreme arbiter. Your decision is final. Respond with ONLY valid JSON.",
+                    zeusPrompt);
+                var stripped = Generator.StripMarkdownFences(zeusResponse);
+                var doc = JsonDocument.Parse(stripped);
+                var zeusVerdict = doc.RootElement.GetProperty("verdict").GetString() ?? "APPROVE";
+                var zeusMessage = doc.RootElement.GetProperty("message").GetString() ?? "";
+
+                var zeusEmoji = zeusVerdict == "VETO" ? "🚫" : "✅";
+                await BroadcastChat(live, "zeus", $"⚡ [ARBITRATION: {zeusVerdict}] {zeusMessage}");
+                reviews.Add(("zeus-arbitration", zeusVerdict, zeusMessage));
+
+                vetoed = zeusVerdict == "VETO";
+                summary = vetoed ? "🚫 Zeus UPHELD veto — pipeline paused" : "✅ Zeus OVERRULED veto — proceeding";
+            }
+            catch (Exception ex)
+            {
+                await BroadcastChat(live, "zeus", $"⚠️ [ARBITRATION ERROR] {ex.Message} — defaulting to veto");
+            }
+        }
+
         await BroadcastChat(live, "system", $"🏛️ {summary}");
         return (vetoed, reviews);
     }
@@ -3792,6 +3846,19 @@ public static class PlatinumForgeServer
         - Rules, invariants, NFRs, and quality constraints MUST NOT appear before ConstraintForge.
         - If you detect content that belongs to a different stage, flag it as "⚠️ Constraint Leakage".
         - Premature requirements and missing traceability must be flagged, not ignored.
+
+        DESIGN COUNCIL — You are part of a council of 8 specialist agents. Know your colleagues and delegate when appropriate:
+        - ☀️ Apollo (The Expander): Creative ideation, lateral thinking, divergent possibilities
+        - 🔥 Prometheus (The Challenger): Questioning assumptions, finding gaps, stress-testing specs
+        - ⚒️ Hephaestus (The Builder): Implementation details, data structures, architecture patterns
+        - ⚖️ Themis (The Enforcer): Rule compliance, consistency, governance
+        - 🏠 Hestia (The Explorer): Deep enrichment, taxonomies, splitting compound ideas
+        - ⚡ Zeus (The Arbiter): Final decisions, resolving disagreements, overriding deadlocks
+        - 🔨 Thor (The Stress Tester): Scale testing, chaos engineering, performance bottlenecks
+        - Ψ Psi (General Designer): Balanced guidance, conversational help
+        If an issue falls outside your specialism, recommend which agent should handle it.
+        For example: "This needs stress-testing — @Thor should validate the load assumptions."
+        If you disagree with another agent's recommendation, state your concern clearly — Zeus will arbitrate.
 
         When you want to suggest a change, include a JSON block in your response wrapped in ```actions ... ```.
         The JSON is an array of action objects:
@@ -4523,7 +4590,7 @@ public static class PlatinumForgeServer
 
                 /* Wizard */
                 #wizard { display: flex; flex-direction: column; height: 100%; }
-                #wizard-steps { display: flex; gap: 2px; padding: 8px; background: #181825; border-bottom: 1px solid #333; flex-wrap: wrap; }
+                #wizard-steps { display: none; }
                 .wizard-step { padding: 4px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; background: #23233a; color: #aaa; border: 1px solid #333; transition: all 0.2s; }
                 .wizard-step.active { background: #6c3baa; color: #fff; border-color: #9b59b6; }
                 .wizard-step.done { background: #1a3a2a; color: #3ecf8e; border-color: #2a5a3a; }
@@ -5231,6 +5298,7 @@ public static class PlatinumForgeServer
 
                 function setStage(idx) {
                     activeStage = idx;
+                    wizardStep = idx;
                     renderPipelineNav();
                     renderConstraints();
                 }
@@ -5647,7 +5715,13 @@ public static class PlatinumForgeServer
 
                     const allKeys = new Set([...Object.keys(sel)]);
                     const suggestions = wizardSuggestions[field] || [];
-                    suggestions.forEach(s => allKeys.add(s.key));
+                    // Auto-select new suggestions by default
+                    suggestions.forEach(s => {
+                        allKeys.add(s.key);
+                        if (!(s.key in sel)) {
+                            sel[s.key] = s.value;
+                        }
+                    });
 
                     const items = [];
                     allKeys.forEach(key => {
@@ -5656,12 +5730,6 @@ public static class PlatinumForgeServer
                         const agent = fromSuggestion ? fromSuggestion.agent : null;
                         const checked = key in sel;
                         items.push({ key, value, agent, checked });
-                    });
-
-                    suggestions.forEach(s => {
-                        if (!allKeys.has(s.key)) {
-                            items.push({ key: s.key, value: s.value, agent: s.agent, checked: false });
-                        }
                     });
 
                     if (items.length === 0 && suggestions.length === 0) {
@@ -5828,6 +5896,8 @@ public static class PlatinumForgeServer
 
                     if (wizardStep < WIZARD_STAGES.length - 1) {
                         wizardStep++;
+                        activeStage = wizardStep;
+                        renderPipelineNav();
                         renderWizard();
                     }
                 }
@@ -5835,6 +5905,8 @@ public static class PlatinumForgeServer
                 function wizardBack() {
                     if (wizardStep > 0) {
                         wizardStep--;
+                        activeStage = wizardStep;
+                        renderPipelineNav();
                         renderWizard();
                     }
                 }
