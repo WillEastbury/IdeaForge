@@ -88,6 +88,14 @@ public class SystemState
     public Dictionary<string, string> IaC { get; set; } = new();          // keyed by IaC file
     public Dictionary<string, string> DeployTweaks { get; set; } = new(); // keyed by IaC file
 
+    // 7. Pipeline config — which stages to run
+    public Dictionary<string, bool> PipelineConfig { get; set; } = new()
+    {
+        ["interfaces"] = true, ["unitTests"] = true, ["code"] = true, ["build"] = true,
+        ["nfrTests"] = true, ["soakTests"] = true, ["integrationTests"] = true,
+        ["iac"] = true, ["publish"] = true,
+    };
+
     public SystemState Clone()
     {
         return new SystemState
@@ -118,6 +126,7 @@ public class SystemState
             TestTweaks = new(TestTweaks),
             IaC = new(IaC),
             DeployTweaks = new(DeployTweaks),
+            PipelineConfig = new(PipelineConfig),
         };
     }
 }
@@ -1511,6 +1520,7 @@ public static class PlatinumForgeServer
                 ["testTweaks"] = state.TestTweaks,
                 ["iac"] = state.IaC,
                 ["deployTweaks"] = state.DeployTweaks,
+                ["pipelineConfig"] = state.PipelineConfig,
                 ["committedAt"] = DateTime.UtcNow.ToString("o"),
             };
             File.WriteAllText(file, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
@@ -1555,6 +1565,7 @@ public static class PlatinumForgeServer
                 if (root.TryGetProperty("testTweaks", out var tt)) s.TestTweaks = JsonToDict(tt);
                 if (root.TryGetProperty("iac", out var iac)) s.IaC = JsonToDict(iac);
                 if (root.TryGetProperty("deployTweaks", out var dt)) s.DeployTweaks = JsonToDict(dt);
+                if (root.TryGetProperty("pipelineConfig", out var pc)) s.PipelineConfig = JsonToBoolDict(pc);
                 return s;
             }
             catch { return null; }
@@ -1586,6 +1597,14 @@ public static class PlatinumForgeServer
             var d = new Dictionary<string, int>();
             foreach (var prop in el.EnumerateObject())
                 d[prop.Name] = prop.Value.TryGetInt32(out var v) ? v : 50;
+            return d;
+        }
+
+        private static Dictionary<string, bool> JsonToBoolDict(JsonElement el)
+        {
+            var d = new Dictionary<string, bool>();
+            foreach (var prop in el.EnumerateObject())
+                d[prop.Name] = prop.Value.ValueKind == JsonValueKind.True;
             return d;
         }
     }
@@ -1866,7 +1885,7 @@ public static class PlatinumForgeServer
                         codeTweaks = live.State.CodeTweaks,
                         testTweaks = live.State.TestTweaks,
                         iac = live.State.IaC,
-                        deployTweaks = live.State.DeployTweaks,
+                        deployTweaks = live.State.DeployTweaks, pipelineConfig = live.State.PipelineConfig,
                     },
                     code = live.CurrentSource,
                     generating = live.Generating,
@@ -1940,7 +1959,7 @@ public static class PlatinumForgeServer
                         codeTweaks = live.State.CodeTweaks,
                         testTweaks = live.State.TestTweaks,
                         iac = live.State.IaC,
-                        deployTweaks = live.State.DeployTweaks,
+                        deployTweaks = live.State.DeployTweaks, pipelineConfig = live.State.PipelineConfig,
                 });
             }
             else if (path == "/api/state" && method == "POST")
@@ -1969,9 +1988,12 @@ public static class PlatinumForgeServer
                 if (root.TryGetProperty("testTweaks", out var ttw)) { live.State.TestTweaks = JsonToDict(ttw); delta["testTweaks"] = live.State.TestTweaks; }
                 if (root.TryGetProperty("iac", out var iac)) { live.State.IaC = JsonToDict(iac); delta["iac"] = live.State.IaC; }
                 if (root.TryGetProperty("deployTweaks", out var dtw)) { live.State.DeployTweaks = JsonToDict(dtw); delta["deployTweaks"] = live.State.DeployTweaks; }
+                if (root.TryGetProperty("pipelineConfig", out var pcfg)) { live.State.PipelineConfig = JsonToBoolDict(pcfg); delta["pipelineConfig"] = live.State.PipelineConfig; }
                 live.AddChat("system", "🔧 Constraints updated");
                 _ = live.Broadcast("state", delta, clientId);
                 _ = live.Broadcast("chat", new { role = "system", message = "🔧 Constraints updated" }, clientId);
+                // Auto-save to disk
+                if (meta != null) meta.CommitState(live.SessionId, live.State);
                 body = JsonSerializer.Serialize(new { ok = true });
             }
             else if (path == "/api/prompt" && method == "POST")
@@ -2027,7 +2049,7 @@ public static class PlatinumForgeServer
                         codeTweaks = live.State.CodeTweaks,
                         testTweaks = live.State.TestTweaks,
                         iac = live.State.IaC,
-                        deployTweaks = live.State.DeployTweaks,
+                        deployTweaks = live.State.DeployTweaks, pipelineConfig = live.State.PipelineConfig,
                         },
                         code = live.CurrentSource, generating = live.Generating,
                     }, clientId);
@@ -2061,7 +2083,7 @@ public static class PlatinumForgeServer
                             deployment = live.State.Deployment,
                             features = live.State.Features, nfr = live.State.NFR, stories = live.State.Stories,
                             codeTweaks = live.State.CodeTweaks, testTweaks = live.State.TestTweaks,
-                            iac = live.State.IaC, deployTweaks = live.State.DeployTweaks,
+                            iac = live.State.IaC, deployTweaks = live.State.DeployTweaks, pipelineConfig = live.State.PipelineConfig,
                             architectureTweaks = live.State.ArchitectureTweaks,
                         });
                         var chatHistory = string.Join("\n", live.ChatLog.TakeLast(20).Select(c => $"[{c.Role}] {c.Message}"));
@@ -2442,6 +2464,14 @@ public static class PlatinumForgeServer
         return d;
     }
 
+    private static Dictionary<string, bool> JsonToBoolDict(JsonElement el)
+    {
+        var d = new Dictionary<string, bool>();
+        foreach (var prop in el.EnumerateObject())
+            d[prop.Name] = prop.Value.ValueKind == JsonValueKind.True;
+        return d;
+    }
+
     private static void SetAuthCookie(HttpListenerResponse resp, string sub)
     {
         var value = AuthManager.CreateAuthCookie(sub);
@@ -2460,6 +2490,9 @@ public static class PlatinumForgeServer
     }
 
     // ── Generation Pipeline (runs async) ─────
+
+    private static bool StageEnabled(LiveSession live, string stage) =>
+        !live.State.PipelineConfig.TryGetValue(stage, out var v) || v;
 
     private static async Task RunGeneration(LiveSession live, string prompt, string userSub = "local")
     {
@@ -2530,61 +2563,76 @@ public static class PlatinumForgeServer
             }
 
             // Stage 1: Interfaces
-            await BroadcastProgress(live, 1, 9, "Interfaces", "running", "Generating interface definitions...");
-            await BroadcastChat(live, "system", "⏳ [1/9] Generating Interfaces...");
-            live.State.Interfaces = await Generator.GenerateInterfaces(live.State);
-            await BroadcastProgress(live, 1, 9, "Interfaces", "done", $"{live.State.Interfaces.Count} files");
-            await BroadcastChat(live, "system", "✅ Interfaces generated");
+            if (StageEnabled(live, "interfaces")) {
+                await BroadcastProgress(live, 1, 9, "Interfaces", "running", "Generating interface definitions...");
+                await BroadcastChat(live, "system", "⏳ [1/9] Generating Interfaces...");
+                live.State.Interfaces = await Generator.GenerateInterfaces(live.State);
+                await BroadcastProgress(live, 1, 9, "Interfaces", "done", $"{live.State.Interfaces.Count} files");
+                await BroadcastChat(live, "system", "✅ Interfaces generated");
+            } else { await BroadcastProgress(live, 1, 9, "Interfaces", "done", "Skipped"); }
 
             // Stage 2: Unit Tests
-            await BroadcastProgress(live, 2, 9, "Unit Tests", "running", "Generating test cases...");
-            await BroadcastChat(live, "system", "⏳ [2/9] Generating Unit Tests...");
-            live.State.UnitTests = await Generator.GenerateUnitTests(live.State);
-            await BroadcastProgress(live, 2, 9, "Unit Tests", "done", $"{live.State.UnitTests.Count} files");
-            await BroadcastChat(live, "system", "✅ Unit Tests generated");
+            if (StageEnabled(live, "unitTests")) {
+                await BroadcastProgress(live, 2, 9, "Unit Tests", "running", "Generating test cases...");
+                await BroadcastChat(live, "system", "⏳ [2/9] Generating Unit Tests...");
+                live.State.UnitTests = await Generator.GenerateUnitTests(live.State);
+                await BroadcastProgress(live, 2, 9, "Unit Tests", "done", $"{live.State.UnitTests.Count} files");
+                await BroadcastChat(live, "system", "✅ Unit Tests generated");
+            } else { await BroadcastProgress(live, 2, 9, "Unit Tests", "done", "Skipped"); }
 
             // Stage 3: Code
-            await BroadcastProgress(live, 3, 9, "Code Generation", "running", "Implementing from interfaces + tests...");
-            await BroadcastChat(live, "system", "⏳ [3/9] Generating Code...");
-            live.State.Code = await Generator.GenerateCode(live.State);
-            await BroadcastProgress(live, 3, 9, "Code Generation", "done", $"{live.State.Code.Count} files");
-            await BroadcastChat(live, "system", "✅ Code generated");
+            if (StageEnabled(live, "code")) {
+                await BroadcastProgress(live, 3, 9, "Code Generation", "running", "Implementing from interfaces + tests...");
+                await BroadcastChat(live, "system", "⏳ [3/9] Generating Code...");
+                live.State.Code = await Generator.GenerateCode(live.State);
+                await BroadcastProgress(live, 3, 9, "Code Generation", "done", $"{live.State.Code.Count} files");
+                await BroadcastChat(live, "system", "✅ Code generated");
+            } else { await BroadcastProgress(live, 3, 9, "Code Generation", "done", "Skipped"); }
 
             // Stage 4: Build + Unit Test retry loop
-            await BroadcastProgress(live, 4, 9, "Build & Test", "running", "Compiling and running unit tests...");
-            await BroadcastChat(live, "system", "⏳ [4/9] Build & Unit Test loop...");
-            var unitTestsPassed = await RunRetryLoop(live);
-            await BroadcastProgress(live, 4, 9, "Build & Test", unitTestsPassed ? "done" : "fail",
-                unitTestsPassed ? "All tests passing" : "Tests failed after retries");
+            var unitTestsPassed = true;
+            if (StageEnabled(live, "build") && StageEnabled(live, "unitTests")) {
+                await BroadcastProgress(live, 4, 9, "Build & Test", "running", "Compiling and running unit tests...");
+                await BroadcastChat(live, "system", "⏳ [4/9] Build & Unit Test loop...");
+                unitTestsPassed = await RunRetryLoop(live);
+                await BroadcastProgress(live, 4, 9, "Build & Test", unitTestsPassed ? "done" : "fail",
+                    unitTestsPassed ? "All tests passing" : "Tests failed after retries");
+            } else { await BroadcastProgress(live, 4, 9, "Build & Test", "done", "Skipped"); }
 
             if (unitTestsPassed)
             {
                 // Stage 5: NFR Tests (Playwright)
-                await BroadcastProgress(live, 5, 9, "NFR Tests", "running", "Generating Playwright tests...");
-                await BroadcastChat(live, "system", "⏳ [5/9] Generating NFR Tests (Playwright)...");
-                live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
-                await BroadcastProgress(live, 5, 9, "NFR Tests", "done", "Generated");
-                await BroadcastChat(live, "system", "✅ NFR Tests generated");
-                await RunExternalTests(live, "nfr", "Playwright", live.State.NfrTests);
+                if (StageEnabled(live, "nfrTests")) {
+                    await BroadcastProgress(live, 5, 9, "NFR Tests", "running", "Generating Playwright tests...");
+                    await BroadcastChat(live, "system", "⏳ [5/9] Generating NFR Tests (Playwright)...");
+                    live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
+                    await BroadcastProgress(live, 5, 9, "NFR Tests", "done", "Generated");
+                    await BroadcastChat(live, "system", "✅ NFR Tests generated");
+                    await RunExternalTests(live, "nfr", "Playwright", live.State.NfrTests);
+                } else { await BroadcastProgress(live, 5, 9, "NFR Tests", "done", "Skipped"); }
 
                 // Stage 6: Soak / Performance Tests (Locust)
-                await BroadcastProgress(live, 6, 9, "Soak Tests", "running", "Generating Locust load tests...");
-                await BroadcastChat(live, "system", "⏳ [6/9] Generating Soak Tests (Locust)...");
-                live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
-                await BroadcastProgress(live, 6, 9, "Soak Tests", "done", "Generated");
-                await BroadcastChat(live, "system", "✅ Soak Tests generated");
-                await RunExternalTests(live, "soak", "Locust", live.State.SoakTests);
+                if (StageEnabled(live, "soakTests")) {
+                    await BroadcastProgress(live, 6, 9, "Soak Tests", "running", "Generating Locust load tests...");
+                    await BroadcastChat(live, "system", "⏳ [6/9] Generating Soak Tests (Locust)...");
+                    live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
+                    await BroadcastProgress(live, 6, 9, "Soak Tests", "done", "Generated");
+                    await BroadcastChat(live, "system", "✅ Soak Tests generated");
+                    await RunExternalTests(live, "soak", "Locust", live.State.SoakTests);
+                } else { await BroadcastProgress(live, 6, 9, "Soak Tests", "done", "Skipped"); }
 
                 // Stage 7: Integration Tests (Jest)
-                await BroadcastProgress(live, 7, 9, "Integration Tests", "running", "Generating Jest integration tests...");
-                await BroadcastChat(live, "system", "⏳ [7/9] Generating Integration Tests (Jest)...");
-                live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
-                await BroadcastProgress(live, 7, 9, "Integration Tests", "done", "Generated");
-                await BroadcastChat(live, "system", "✅ Integration Tests generated");
-                await RunExternalTests(live, "integration", "Jest", live.State.IntegrationTests);
+                if (StageEnabled(live, "integrationTests")) {
+                    await BroadcastProgress(live, 7, 9, "Integration Tests", "running", "Generating Jest integration tests...");
+                    await BroadcastChat(live, "system", "⏳ [7/9] Generating Integration Tests (Jest)...");
+                    live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
+                    await BroadcastProgress(live, 7, 9, "Integration Tests", "done", "Generated");
+                    await BroadcastChat(live, "system", "✅ Integration Tests generated");
+                    await RunExternalTests(live, "integration", "Jest", live.State.IntegrationTests);
+                } else { await BroadcastProgress(live, 7, 9, "Integration Tests", "done", "Skipped"); }
 
                 // Stage 8: IaC Generation
-                if (live.State.Deployment.Count > 0 || live.State.IaC.Count > 0)
+                if (StageEnabled(live, "iac") && (live.State.Deployment.Count > 0 || live.State.IaC.Count > 0))
                 {
                     await BroadcastProgress(live, 8, 9, "Infrastructure", "running", "Generating IaC artifacts...");
                     await BroadcastChat(live, "system", "⏳ [8/9] Generating Infrastructure as Code...");
@@ -2598,11 +2646,13 @@ public static class PlatinumForgeServer
                 }
 
                 // Stage 9: Publish artifact
-                await BroadcastProgress(live, 9, 9, "Publish", "running", "Packaging artifact...");
-                await BroadcastChat(live, "system", "⏳ [9/9] Publishing artifact...");
-                var artifactPath = await PublishArtifact(live, userSub);
-                await BroadcastProgress(live, 9, 9, "Publish", "done", "Artifact ready");
-                await BroadcastChat(live, "success", $"📦 Artifact published: {artifactPath}");
+                if (StageEnabled(live, "publish")) {
+                    await BroadcastProgress(live, 9, 9, "Publish", "running", "Packaging artifact...");
+                    await BroadcastChat(live, "system", "⏳ [9/9] Publishing artifact...");
+                    var artifactPath = await PublishArtifact(live, userSub);
+                    await BroadcastProgress(live, 9, 9, "Publish", "done", "Artifact ready");
+                    await BroadcastChat(live, "success", $"📦 Artifact published: {artifactPath}");
+                } else { await BroadcastProgress(live, 9, 9, "Publish", "done", "Skipped"); }
             }
             else
             {
@@ -3849,6 +3899,43 @@ public static class PlatinumForgeServer
                     }).join('') + `<div class="slider-save"><button class="btn-sm save" onclick="saveSliders()">💾 Save sliders</button></div>`;
                 }
 
+                const PIPELINE_STAGE_META = {
+                    interfaces:       { label: 'Interfaces',              icon: '📐', desc: 'Generate interface/contract definitions' },
+                    unitTests:        { label: 'Unit Tests',              icon: '🧪', desc: 'Generate unit test cases' },
+                    code:             { label: 'Code Generation',         icon: '💻', desc: 'Generate implementation code' },
+                    build:            { label: 'Build & Test Loop',       icon: '🔨', desc: 'Compile and run unit tests with retry' },
+                    nfrTests:         { label: 'NFR Tests (Playwright)',   icon: '🎭', desc: 'Generate and run browser/UI tests' },
+                    soakTests:        { label: 'Soak Tests (Locust)',     icon: '🌊', desc: 'Generate and run load/performance tests' },
+                    integrationTests: { label: 'Integration Tests (Jest)', icon: '🔗', desc: 'Generate and run integration tests' },
+                    iac:              { label: 'Infrastructure as Code',  icon: '☁️', desc: 'Generate deployment/IaC artifacts' },
+                    publish:          { label: 'Publish Artifact',        icon: '📦', desc: 'Package and publish build artifact' },
+                };
+
+                function buildPipelineConfigHtml() {
+                    const cfg = currentState.pipelineConfig || {};
+                    return Object.entries(PIPELINE_STAGE_META).map(([key, meta]) => {
+                        const enabled = cfg[key] !== false;
+                        return `<div style="display:flex;align-items:center;gap:8px;padding:3px 8px;">
+                            <input type="checkbox" id="pipe-${key}" data-pipe="${key}" ${enabled ? 'checked' : ''}
+                                onchange="savePipelineConfig()" style="accent-color:var(--accent);cursor:pointer;" />
+                            <label for="pipe-${key}" style="flex:1;cursor:pointer;font-size:12px;color:${enabled ? 'var(--text)' : 'var(--text-dim)'};">
+                                ${meta.icon} ${meta.label}
+                                <span style="font-size:10px;color:var(--text-dim);margin-left:4px;">${meta.desc}</span>
+                            </label>
+                        </div>`;
+                    }).join('');
+                }
+
+                async function savePipelineConfig() {
+                    const pipelineConfig = {};
+                    document.querySelectorAll('[data-pipe]').forEach(cb => {
+                        pipelineConfig[cb.dataset.pipe] = cb.checked;
+                    });
+                    currentState.pipelineConfig = pipelineConfig;
+                    await apiFetch('/api/state', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pipelineConfig }) });
+                    renderPipelineNav();
+                }
+
                 function renderSliders() {
                     // Only re-render if quality stage is active (sliders are in constraints panel now)
                     if (activeStage === 4) renderConstraints();
@@ -3958,13 +4045,17 @@ public static class PlatinumForgeServer
                     const el = document.getElementById('constraints');
                     const group = LAYER_GROUPS[activeStage];
 
-                    // Stage 4 = Quality Sliders
+                    // Stage 4 = Quality Sliders + Pipeline Config
                     if (activeStage === 4) {
                         renderSliders();
                         const slidersHtml = buildSlidersHtml();
+                        const pipelineHtml = buildPipelineConfigHtml();
                         el.innerHTML = `<div class="layer-group" style="padding:8px;">
                             <div class="layer-group-title">${group.icon} ${group.name}</div>
                             ${slidersHtml}
+                            <div class="layer-group-title" style="margin-top:12px;">⚙️ Pipeline Stages</div>
+                            <div style="padding:4px 8px;font-size:11px;color:var(--text-dim);margin-bottom:4px;">Toggle which stages run during generation</div>
+                            ${pipelineHtml}
                         </div>`;
                         return;
                     }
@@ -4162,7 +4253,7 @@ public static class PlatinumForgeServer
                 document.addEventListener('DOMContentLoaded', () => {
                     const input = document.getElementById('prompt-input');
                     if (input) input.addEventListener('keydown', e => {
-                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitPrompt(); }
+                        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
                     });
                     refreshState();
                     initSessionLabel();
