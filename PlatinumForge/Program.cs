@@ -3058,7 +3058,14 @@ public static class PlatinumForgeServer
 
                 var validStages = new HashSet<string> { "expansion", "personas", "rules", "invariants", "nfr", "features", "stories", "acceptanceCriteria", "architecture", "dataflow", "frameworksAndTools", "language", "deploymentModel" };
 
-                if (!validStages.Contains(stage))
+                // Map composite wizard stage keys to their constituent fields
+                var compositeStages = new Dictionary<string, string[]> {
+                    ["constraintForge"] = new[] { "personas", "rules", "invariants", "nfr" },
+                    ["behaviourForge"] = new[] { "features", "stories", "acceptanceCriteria" },
+                    ["shapeForge"] = new[] { "architecture", "dataflow", "frameworksAndTools", "language", "deploymentModel" },
+                };
+
+                if (!validStages.Contains(stage) && !compositeStages.ContainsKey(stage))
                 {
                     body = JsonSerializer.Serialize(new { ok = false, error = $"Unknown stage: {stage}" });
                 }
@@ -3088,28 +3095,36 @@ public static class PlatinumForgeServer
                     }
                     else
                     {
+                        // Resolve composite stage keys to individual fields
+                        var fieldsToQuery = compositeStages.ContainsKey(stage)
+                            ? compositeStages[stage]
+                            : new[] { stage };
+
                         var suggestions = new List<object>();
-                        foreach (var agent in CouncilAgents)
+                        foreach (var field in fieldsToQuery)
                         {
-                            var persona = GetAgentSystemPrompt(agent);
-                            var prompt = $"You are {agent}. {persona}\n\nProject description: {live.State.Description.GetValueOrDefault("main", "")}\n\nCurrent project context:\n{stateContext}\n\nSuggest 2-4 items for the \"{stage}\" constraint layer. Each item needs a short kebab-case key and a description value.\n\nRespond with ONLY a JSON array like: [{{\"key\": \"item-key\", \"value\": \"Item description\"}}]";
-                            try
+                            foreach (var agent in CouncilAgents)
                             {
-                                var response = await OpenAIClient.Complete("You are a software design agent. Respond with ONLY a JSON array.", prompt);
-                                var stripped = Generator.StripMarkdownFences(response);
-                                var items = JsonSerializer.Deserialize<JsonElement>(stripped);
-                                if (items.ValueKind == JsonValueKind.Array)
+                                var persona = GetAgentSystemPrompt(agent);
+                                var prompt = $"You are {agent}. {persona}\n\nProject description: {live.State.Description.GetValueOrDefault("main", "")}\n\nCurrent project context:\n{stateContext}\n\nSuggest 2-4 items for the \"{field}\" constraint layer. Each item needs a short kebab-case key and a description value.\n\nRespond with ONLY a JSON array like: [{{\"key\": \"item-key\", \"value\": \"Item description\"}}]";
+                                try
                                 {
-                                    foreach (var item in items.EnumerateArray())
+                                    var response = await OpenAIClient.Complete("You are a software design agent. Respond with ONLY a JSON array.", prompt);
+                                    var stripped = Generator.StripMarkdownFences(response);
+                                    var items = JsonSerializer.Deserialize<JsonElement>(stripped);
+                                    if (items.ValueKind == JsonValueKind.Array)
                                     {
-                                        var key = item.GetProperty("key").GetString() ?? "";
-                                        var value = item.GetProperty("value").GetString() ?? "";
-                                        if (!string.IsNullOrEmpty(key))
-                                            suggestions.Add(new { agent, key, value });
+                                        foreach (var item in items.EnumerateArray())
+                                        {
+                                            var key = item.GetProperty("key").GetString() ?? "";
+                                            var value = item.GetProperty("value").GetString() ?? "";
+                                            if (!string.IsNullOrEmpty(key))
+                                                suggestions.Add(new { agent, field, key, value });
+                                        }
                                     }
                                 }
+                                catch { }
                             }
-                            catch { }
                         }
                         body = JsonSerializer.Serialize(new { ok = true, suggestions });
                     }
@@ -3448,6 +3463,32 @@ public static class PlatinumForgeServer
         var reviews = new List<(string Agent, string Verdict, string Message)>();
         bool vetoed = false;
 
+        // Expansion stage: detect constraint leakage before agent reviews
+        if (completedStage == "expansion")
+        {
+            bool hasLeakage = live.State.Rules.Count > 0
+                || live.State.Invariants.Count > 0
+                || live.State.NFR.Count > 0
+                || live.State.Sliders.Any(kv => kv.Value != SystemState.DefaultSliders().GetValueOrDefault(kv.Key, kv.Value));
+
+            if (hasLeakage)
+            {
+                var leakageDetails = new List<string>();
+                if (live.State.Rules.Count > 0) leakageDetails.Add($"rules ({live.State.Rules.Count})");
+                if (live.State.Invariants.Count > 0) leakageDetails.Add($"invariants ({live.State.Invariants.Count})");
+                if (live.State.NFR.Count > 0) leakageDetails.Add($"NFRs ({live.State.NFR.Count})");
+                if (live.State.Sliders.Any(kv => kv.Value != SystemState.DefaultSliders().GetValueOrDefault(kv.Key, kv.Value)))
+                    leakageDetails.Add("quality sliders (modified from defaults)");
+
+                var leakageMsg = $"⚠️ Constraint Leakage detected in Expansion: {string.Join(", ", leakageDetails)}. " +
+                    "These belong in ConstraintForge, not Expansion. Cleanup required before proceeding.";
+                await BroadcastChat(live, "system", leakageMsg);
+                reviews.Add(("system", "VETO", leakageMsg));
+                vetoed = true;
+                _ = live.BroadcastAll("pipeline-vetoed", new { stage = completedStage, agent = "system", message = leakageMsg });
+            }
+        }
+
         foreach (var agent in CouncilAgents)
         {
             var persona = GetAgentSystemPrompt(agent);
@@ -3462,6 +3503,14 @@ public static class PlatinumForgeServer
                 Current project state:
                 {stateContext}
 
+                STAGE BOUNDARY CONTRACT:
+                - Agents must respect stage boundaries. Each stage has a defined scope.
+                - Expansion is INTERPRETIVE ONLY: only interpretations and exploratory personas are allowed.
+                - Rules, invariants, NFRs, and quality constraints MUST NOT appear before ConstraintForge.
+                - If you detect content that belongs to a different stage, this is "Constraint Leakage" — VETO it.
+                - Flag premature requirements and missing traceability when applicable.
+                {(completedStage == "expansion" ? "\nYou are reviewing EXPANSION output. VETO if ANY rules, invariants, NFRs, or quality constraints are present. Only interpretations and exploratory personas are allowed." : "")}
+
                 Review this stage output. Respond with ONLY valid JSON:
                 {"{"}
                   "verdict": "APPROVE" or "CONCERN" or "VETO",
@@ -3472,7 +3521,7 @@ public static class PlatinumForgeServer
                 CONCERN = minor issues but OK to proceed (explain what)
                 VETO = critical problem, do NOT proceed (explain what must be fixed)
 
-                Only VETO for genuine blockers: missing critical requirements, contradictions with constraints, architectural violations.
+                Only VETO for genuine blockers: missing critical requirements, contradictions with constraints, architectural violations, or constraint leakage across stage boundaries.
                 """;
 
             try
@@ -3730,12 +3779,19 @@ public static class PlatinumForgeServer
         
         The metadata is structured in layers (9-stage pipeline: Seed → Expansion → ConstraintForge → BehaviourForge → ShapeForge → BuildForge → GenerateForge → Validate → Ship):
         - Seed: idea (raw idea), description (expanded description)
-        - Expansion: interpretations (expanded angles), personas (user roles/actors)
+        - Expansion: interpretations (expanded angles), personas (user roles/actors — exploratory, non-binding)
         - ConstraintForge: personas (formalized), rules (hard rules), invariants (system invariants), nfr (non-functional requirements)
         - BehaviourForge: features (capabilities), stories (user scenarios), acceptanceCriteria (AC)
         - ShapeForge: architecture, dataflow, frameworksAndTools, language, deploymentModel (tech decisions)
         - Quality: sliders (0-100 dials for performance, security, readability, etc.)
         - Generated: fileManifest (planned files), generatedInterfaces/Code/Tests (what exists)
+
+        STAGE BOUNDARY RULES — you MUST respect these:
+        - Agents must respect stage boundaries. Content belongs to the stage that defines it.
+        - Expansion is INTERPRETIVE ONLY: only interpretations and exploratory personas are allowed.
+        - Rules, invariants, NFRs, and quality constraints MUST NOT appear before ConstraintForge.
+        - If you detect content that belongs to a different stage, flag it as "⚠️ Constraint Leakage".
+        - Premature requirements and missing traceability must be flagged, not ignored.
 
         When you want to suggest a change, include a JSON block in your response wrapped in ```actions ... ```.
         The JSON is an array of action objects:
@@ -3762,6 +3818,12 @@ public static class PlatinumForgeServer
             - Propose multiple divergent directions rather than converging on one
             - Be enthusiastic and inspiring — you are the voice of "what if?"
             - Never dismiss ideas as too ambitious; instead, show how to get there incrementally
+            - Encourage diversity of interpretations — breadth over depth at this stage
+
+            STAGE BOUNDARY: During Expansion, you MUST NOT introduce structure, constraints, rules, invariants, NFRs, or quality requirements.
+            Expansion is interpretive only — propose interpretations and exploratory personas, nothing more.
+            If you notice constraint-like content in Expansion output, flag it as "⚠️ Constraint Leakage — this belongs in ConstraintForge".
+
             Be concise but exciting. Suggest concrete additions via actions.
             {AgentActionsPrompt}
             """,
@@ -3776,6 +3838,10 @@ public static class PlatinumForgeServer
             - Push back on vague requirements — demand specificity
             - Play devil's advocate constructively — you strengthen ideas by stress-testing them
             - Point out edge cases, failure modes, and things that could go wrong
+
+            STAGE BOUNDARY: During Expansion, you may challenge ambiguity and request prioritisation, but you MUST NOT push for constraints, rules, invariants, or NFRs.
+            Those belong in ConstraintForge. If you see them leaking into Expansion, flag as "⚠️ Constraint Leakage".
+
             Be direct and incisive. Ask tough questions. When suggesting changes, explain the risk you're mitigating.
             {AgentActionsPrompt}
             """,
@@ -3804,6 +3870,12 @@ public static class PlatinumForgeServer
             - When something doesn't fit the rules, suggest the rules should change (via Apollo)
             - Cross-reference different layers for consistency (e.g., features vs stories, architecture vs deployment)
             - Identify violations of SOLID principles, security best practices, or stated invariants
+
+            STAGE BOUNDARY: You MUST enforce that no constraints exist before ConstraintForge.
+            During Expansion, if you detect rules, invariants, NFRs, or quality constraints, you MUST BLOCK or WARN:
+            "⚠️ Constraint Leakage — no constraints may exist before ConstraintForge. Remove or defer these items."
+            This is a hard governance rule — Expansion is interpretive only.
+
             Be firm but fair. When blocking, always explain which rule is violated and suggest a path forward.
             {AgentActionsPrompt}
             """,
@@ -3817,8 +3889,14 @@ public static class PlatinumForgeServer
             - Add missing considerations, edge cases, and supporting concepts
             - Improve wording to be precise, clear, and unambiguous
             - Suggest taxonomies, categorisations, and hierarchies for complex domains
-            - Fill gaps — if features exist without stories, write the stories; if rules exist without invariants, add them
             - Preserve the user's intent while enhancing quality and completeness
+
+            STAGE BOUNDARY: During Expansion, you MUST NOT validate or propose rules, invariants, NFRs, or quality constraints.
+            Expansion is interpretive only — enrich interpretations and exploratory personas, nothing else.
+            If rules or invariants appear in Expansion output, FLAG them as a violation:
+            "⚠️ Constraint Leakage — rules/invariants belong in ConstraintForge, not Expansion."
+            In later stages (ConstraintForge+), you may fill gaps: if features exist without stories, write the stories; if rules exist without invariants, add them.
+
             Be thorough and scholarly. Your enrichments should make vague specs production-ready.
             {AgentActionsPrompt}
             """,
@@ -3834,6 +3912,12 @@ public static class PlatinumForgeServer
             - Override individual agents when their perspective is too narrow
             - Issue clear directives: "We will do X because Y, despite Z's concern about W"
             - When vetoes conflict, you have the power to override or uphold them
+
+            STAGE BOUNDARY: You MUST reject stage output if constraint leakage is present.
+            Approval requires strict adherence to the stage contract. During Expansion review, if ANY rules, invariants, NFRs,
+            or quality constraints are present, you MUST VETO and require cleanup before proceeding.
+            No stage may introduce content that belongs to a later stage.
+
             Be commanding but fair. Your decisions are final. Always explain your reasoning.
             {AgentActionsPrompt}
             """,
@@ -3849,6 +3933,11 @@ public static class PlatinumForgeServer
             - Review test coverage: what edge cases are missing? What integration paths are untested?
             - Think about security under stress: can rate limits be bypassed? Does auth fail open?
             - Focus on the physical reality of execution: CPU, memory, I/O, network, DNS, TLS handshakes
+
+            STAGE BOUNDARY: During Expansion, you MUST NOT request or introduce NFRs, performance requirements, or quality constraints.
+            Instead, if stress/performance concerns arise, say: "Ensure NFRs are defined in ConstraintForge."
+            You may note areas that WILL need stress testing later, but must not pull those concerns into Expansion.
+
             Be relentless and destructive (in a good way). You find the bugs before production does.
             {AgentActionsPrompt}
             """,
@@ -5678,7 +5767,14 @@ public static class PlatinumForgeServer
                         });
                         const data = await resp.json();
                         if (data.ok) {
-                            wizardSuggestions[stage.key] = data.suggestions;
+                            if (stage.fields && stage.fields.length > 0 && data.suggestions.length > 0 && data.suggestions[0].field) {
+                                // Composite stage: distribute suggestions by field
+                                for (const field of stage.fields) {
+                                    wizardSuggestions[field] = data.suggestions.filter(s => s.field === field);
+                                }
+                            } else {
+                                wizardSuggestions[stage.key] = data.suggestions;
+                            }
                         }
                     } catch (e) {
                         console.error('Council suggest failed:', e);
