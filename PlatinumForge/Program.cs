@@ -3706,6 +3706,22 @@ public static class PlatinumForgeServer
                         <span style="margin-left:12px" id="statArtifact">📦 —</span>
                     </div>
                 </div>
+                <!-- Chat Panel (Psi Agent) -->
+                <div id="chat-panel">
+                    <div class="chat-panel-header">
+                        <span>Ψ Psi</span>
+                        <span style="font-size:10px;color:var(--text-dim);font-weight:400;">AI Design Agent</span>
+                    </div>
+                    <div id="chat"></div>
+                    <div id="prompt-area">
+                        <textarea id="prompt-input" rows="2" placeholder="Ask Psi about your design, or describe what to build..."></textarea>
+                        <div id="prompt-actions">
+                            <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">Ψ Send</button>
+                            <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">🔥 Generate</button>
+                            <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- Session Flyout -->
@@ -3733,26 +3749,9 @@ public static class PlatinumForgeServer
                     <button class="btn btn-secondary" onclick="closeShareDialog()">Close</button>
                     <button class="btn btn-primary" onclick="copyShareUrl()">📋 Copy</button>
                 </div>
-                <!-- Chat Panel -->
-                <div id="chat-panel">
-                    <div class="chat-panel-header">
-                        <span>Ψ Psi</span>
-                        <span style="font-size:10px;color:var(--text-dim);font-weight:400;">AI Design Agent</span>
-                    </div>
-                    <div id="chat"></div>
-                    <div id="prompt-area">
-                        <textarea id="prompt-input" rows="2" placeholder="Ask Psi about your design, or describe what to build..."></textarea>
-                        <div id="prompt-actions">
-                            <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">Ψ Send</button>
-                            <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">🔥 Generate</button>
-                            <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
-                        </div>
-                    </div>
-                </div>
             </div>
 
-            <!-- Session Flyout -->
-            <div id="builds-overlay" onclick="toggleBuildsFlyout()" style="display:none;"></div>
+            <!-- Builds Flyout -->
             <div id="builds-flyout" style="display:none; position:fixed; right:0; top:0; bottom:0; width:380px; background:var(--surface); border-left:2px solid var(--accent); z-index:1000; overflow-y:auto; box-shadow:-4px 0 24px rgba(0,0,0,0.3);">
                 <div class="flyout-header">
                     <span>📦 Build History</span>
