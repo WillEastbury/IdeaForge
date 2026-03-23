@@ -3755,6 +3755,27 @@ public static class PlatinumForgeServer
                     renderConstraints();
                 }
 
+                // Periodically sync state from server to catch any drift
+                setInterval(async () => {
+                    try {
+                        const r = await fetch('/api/state');
+                        if (r.ok) {
+                            const newState = await r.json();
+                            // Only update if we're not mid-edit (check if any textarea is focused)
+                            if (!document.activeElement || document.activeElement.tagName !== 'TEXTAREA') {
+                                currentState = newState;
+                            } else {
+                                // Merge non-editing layers
+                                for (const [k,v] of Object.entries(newState)) {
+                                    if (!document.querySelector(`[data-layer="${k}"]`)) {
+                                        currentState[k] = v;
+                                    }
+                                }
+                            }
+                        }
+                    } catch {}
+                }, 10000);
+
                 const PRESETS = {
                     description: [
                         { label: '🛒 E-commerce Platform', items: { 'overview': 'An online marketplace where users can browse products, add to cart, and checkout with payment processing.', 'goals': 'Enable sellers to list products, buyers to purchase them, with reviews, search, and order tracking.' }},
@@ -4156,8 +4177,8 @@ public static class PlatinumForgeServer
                 }
 
                 async function saveConstraints(layer) {
-                    const body = document.getElementById('body-' + layer);
-                    const items = body.querySelectorAll('.constraint-item');
+                    const bodyEl = document.getElementById('body-' + layer);
+                    const items = bodyEl.querySelectorAll('.constraint-item');
                     const data = {};
                     items.forEach(item => {
                         const key = item.querySelector('input').value.trim();
@@ -4165,12 +4186,16 @@ public static class PlatinumForgeServer
                         if (key) data[key] = val;
                     });
                     currentState[layer] = data;
-                    await apiFetch('/api/state', {
+                    const resp = await apiFetch('/api/state', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ [layer]: data })
                     });
+                    if (!resp.ok) console.error('Save failed for', layer, resp.status);
                     renderPipelineNav();
+                    // Flash save confirmation
+                    const saveBtn = bodyEl.querySelector('.save');
+                    if (saveBtn) { saveBtn.textContent = '✅ Saved'; setTimeout(() => saveBtn.textContent = '💾 Save', 1500); }
                 }
 
                 async function submitPrompt(override) {
