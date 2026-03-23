@@ -3201,7 +3201,7 @@ public static class PlatinumForgeServer
 
     // Run a council review after a pipeline stage completes.
     // All 6 agents review the stage output; a VETO from any agent pauses the pipeline.
-    private static readonly string[] CouncilAgents = { "psi", "apollo", "prometheus", "hephaestus", "themis", "hestia" };
+    private static readonly string[] CouncilAgents = { "psi", "apollo", "prometheus", "hephaestus", "themis", "hestia", "zeus", "thor" };
 
     private static string BuildStageOutputSummary(LiveSession live, string stage)
     {
@@ -3849,6 +3849,36 @@ public static class PlatinumForgeServer
             Be thorough and scholarly. Your enrichments should make vague specs production-ready.
             {AgentActionsPrompt}
             """,
+        "zeus" =>
+            $"""
+            You are ⚡ Zeus, the Arbiter — the supreme decision-maker for PlatinumForge by WaveFunctionLabs.
+            Your role is to RESOLVE disagreements and make FINAL DECISIONS when the council cannot agree. You:
+            - Listen to all perspectives from the other council members and synthesise a ruling
+            - Break deadlocks — when Apollo and Prometheus disagree, you decide the path forward
+            - Weigh trade-offs pragmatically — consider time, complexity, risk, and value
+            - Make decisive, authoritative calls — no hedging, no "it depends"
+            - Prioritise what matters MOST for the user's stated intent
+            - Override individual agents when their perspective is too narrow
+            - Issue clear directives: "We will do X because Y, despite Z's concern about W"
+            - When vetoes conflict, you have the power to override or uphold them
+            Be commanding but fair. Your decisions are final. Always explain your reasoning.
+            {AgentActionsPrompt}
+            """,
+        "thor" =>
+            $"""
+            You are 🔨 Thor, the Stress Tester — the execution physics agent for PlatinumForge by WaveFunctionLabs.
+            Your role is to TEST, BREAK, and VALIDATE the generated system under pressure. You:
+            - Think about what happens at scale: 10x, 100x, 1000x the expected load
+            - Identify performance bottlenecks, memory leaks, connection pool exhaustion
+            - Propose destructive test scenarios: what if the database is down? Network partition? Disk full?
+            - Challenge error handling: what happens with malformed input, null values, concurrent writes?
+            - Suggest chaos engineering approaches: kill processes, inject latency, corrupt data
+            - Review test coverage: what edge cases are missing? What integration paths are untested?
+            - Think about security under stress: can rate limits be bypassed? Does auth fail open?
+            - Focus on the physical reality of execution: CPU, memory, I/O, network, DNS, TLS handshakes
+            Be relentless and destructive (in a good way). You find the bugs before production does.
+            {AgentActionsPrompt}
+            """,
         _ => // psi (default)
             $"""
             You are Ψ Psi, the general design agent for PlatinumForge by WaveFunctionLabs.
@@ -4462,8 +4492,12 @@ public static class PlatinumForgeServer
                 .btn-secondary:hover { border-color: var(--accent); }
 
                 /* Chat Flyout */
-                #chat-panel { width: 340px; min-width: 280px; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); overflow: hidden; }
+                #chat-panel { width: 420px; min-width: 320px; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); overflow: hidden; transition: width 0.3s ease, min-width 0.3s ease, opacity 0.3s ease; }
+                #chat-panel.collapsed { width: 0; min-width: 0; opacity: 0; pointer-events: none; border-left: none; }
                 #chat-panel .chat-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: linear-gradient(135deg, #1a1a2e, #16213e); border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 700; color: var(--accent); }
+                #chat-toggle-btn { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 100; background: var(--surface2); border: 1px solid var(--border); border-right: none; color: var(--text-dim); padding: 8px 4px; border-radius: 6px 0 0 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; display: none; }
+                #chat-toggle-btn:hover { background: var(--accent); color: #fff; }
+                #chat-toggle-btn.visible { display: block; }
                 #chat-panel #chat { flex: 1; overflow-y: auto; padding: 8px; }
                 #chat-panel #prompt-area { border-top: 1px solid var(--border); padding: 10px; }
                 #chat-panel #prompt-area textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 6px; font-size: 13px; resize: vertical; font-family: inherit; }
@@ -4481,13 +4515,28 @@ public static class PlatinumForgeServer
                 .chat-entry.hephaestus { background: rgba(150,120,90,0.1); border-left: 3px solid #b8860b; }
                 .chat-entry.themis { background: rgba(100,200,150,0.1); border-left: 3px solid #3ecf8e; }
                 .chat-entry.hestia { background: rgba(255,160,200,0.1); border-left: 3px solid #f0a0c8; }
+                .chat-entry.zeus { background: rgba(255,215,0,0.12); border-left: 3px solid #ffd700; }
+                .chat-entry.thor { background: rgba(79,195,247,0.1); border-left: 3px solid #4fc3f7; }
                 .chat-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
                 .chat-action-btn { background: var(--surface2); border: 1px solid var(--purple); color: var(--purple); padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 4px; }
                 .chat-action-btn:hover { background: var(--purple); color: #fff; }
                 .chat-action-btn.applied { background: var(--green); border-color: var(--green); color: #000; cursor: default; opacity: 0.7; }
                 .chat-action-btn .action-layer { font-size: 9px; opacity: 0.7; text-transform: uppercase; }
                 .chat-time { font-size: 10px; color: var(--text-dim); margin-bottom: 2px; }
-                .agent-tabs { display: flex; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--surface2); overflow-x: auto; }
+                .agent-tabs { display: flex; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--surface2); overflow-x: auto; flex-wrap: wrap; }
+                .agent-tab { font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid transparent; background: transparent; color: var(--text-dim); cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+                .agent-tab:hover { background: rgba(188,140,255,0.15); color: var(--text); }
+                .agent-tab.active { background: color-mix(in srgb, var(--agent-color) 20%, transparent); border-color: var(--agent-color); color: var(--agent-color); font-weight: 600; }
+                .agent-card { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+                .agent-card .agent-avatar { font-size: 16px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,0.05); }
+                .agent-card .agent-info { display: flex; flex-direction: column; }
+                .agent-card .agent-name { font-size: 11px; font-weight: 700; }
+                .agent-card .agent-role { font-size: 9px; color: var(--text-dim); }
+                .agent-mood { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 4px; }
+                .agent-mood.ready { background: #3fb950; }
+                .agent-mood.thinking { background: #f5c542; animation: pulse 1s infinite; }
+                .agent-mood.vetoed { background: #f85149; }
+                @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
                 .agent-tab { background: none; border: 1px solid transparent; color: var(--text-dim); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
                 .agent-tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
                 .agent-tab.active { border-color: var(--agent-color, var(--purple)); color: var(--agent-color, var(--purple)); background: rgba(255,255,255,0.05); font-weight: 600; }
@@ -4646,19 +4695,23 @@ public static class PlatinumForgeServer
                         <span style="margin-left:12px" id="statArtifact">📦 —</span>
                     </div>
                 </div>
-                <!-- Chat Panel (Psi Agent) -->
+                <!-- Chat Panel (Design Council) -->
+                <button id="chat-toggle-btn" onclick="toggleChatPanel()" title="Show Design Council">Ψ</button>
                 <div id="chat-panel">
                     <div class="chat-panel-header">
                         <span>Ψ Agents</span>
                         <span style="font-size:10px;color:var(--text-dim);font-weight:400;">Design Council</span>
+                        <button onclick="toggleChatPanel()" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:16px;padding:2px 4px;" title="Hide panel">✕</button>
                     </div>
                     <div class="agent-tabs">
                         <button class="agent-tab active" style="--agent-color:#bc8cff;" onclick="selectAgent('psi', this)">Ψ Psi</button>
                         <button class="agent-tab" style="--agent-color:#f5c542;" onclick="selectAgent('apollo', this)">☀️ Apollo</button>
-                        <button class="agent-tab" style="--agent-color:#ff6432;" onclick="selectAgent('prometheus', this)">🔥 Prometheus</button>
-                        <button class="agent-tab" style="--agent-color:#b8860b;" onclick="selectAgent('hephaestus', this)">⚒️ Hephaestus</button>
+                        <button class="agent-tab" style="--agent-color:#ff6432;" onclick="selectAgent('prometheus', this)">🔥 Pro</button>
+                        <button class="agent-tab" style="--agent-color:#b8860b;" onclick="selectAgent('hephaestus', this)">⚒️ Heph</button>
                         <button class="agent-tab" style="--agent-color:#3ecf8e;" onclick="selectAgent('themis', this)">⚖️ Themis</button>
                         <button class="agent-tab" style="--agent-color:#f0a0c8;" onclick="selectAgent('hestia', this)">🏠 Hestia</button>
+                        <button class="agent-tab" style="--agent-color:#ffd700;" onclick="selectAgent('zeus', this)">⚡ Zeus</button>
+                        <button class="agent-tab" style="--agent-color:#4fc3f7;" onclick="selectAgent('thor', this)">🔨 Thor</button>
                     </div>
                     <div id="chat"></div>
                     <div id="prompt-area">
@@ -4982,7 +5035,13 @@ public static class PlatinumForgeServer
                     if (role === 'user') {
                         label = '<div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:2px;">You</div>';
                     } else if (agentInfo) {
-                        label = `<div style="font-size:10px;font-weight:700;color:${agentInfo.color};margin-bottom:2px;">${agentInfo.icon} ${agentInfo.name}</div>`;
+                        label = `<div class="agent-card">
+                            <div class="agent-avatar" style="color:${agentInfo.color}">${agentInfo.icon}</div>
+                            <div class="agent-info">
+                                <span class="agent-name" style="color:${agentInfo.color}">${agentInfo.name}<span class="agent-mood ${agentInfo.mood || 'ready'}"></span></span>
+                                <span class="agent-role">${agentInfo.role}</span>
+                            </div>
+                        </div>`;
                     }
                     div.innerHTML = `<div class="chat-time">${t}</div>${label}${escHtml(message)}${actionsHtml}`;
                     el.appendChild(div);
@@ -5669,12 +5728,14 @@ public static class PlatinumForgeServer
 
                 let activeAgent = 'psi';
                 const AGENT_META = {
-                    psi:        { icon: 'Ψ',  name: 'Psi',        color: '#bc8cff' },
-                    apollo:     { icon: '☀️', name: 'Apollo',     color: '#f5c542' },
-                    prometheus: { icon: '🔥', name: 'Prometheus', color: '#ff6432' },
-                    hephaestus: { icon: '⚒️', name: 'Hephaestus', color: '#b8860b' },
-                    themis:     { icon: '⚖️', name: 'Themis',     color: '#3ecf8e' },
-                    hestia:     { icon: '🏠', name: 'Hestia',     color: '#f0a0c8' },
+                    psi:        { icon: 'Ψ',  name: 'Psi',        role: 'General Designer',    color: '#bc8cff', mood: 'ready' },
+                    apollo:     { icon: '☀️', name: 'Apollo',     role: 'The Expander',        color: '#f5c542', mood: 'ready' },
+                    prometheus: { icon: '🔥', name: 'Prometheus', role: 'The Challenger',      color: '#ff6432', mood: 'ready' },
+                    hephaestus: { icon: '⚒️', name: 'Hephaestus', role: 'The Builder',        color: '#b8860b', mood: 'ready' },
+                    themis:     { icon: '⚖️', name: 'Themis',     role: 'The Enforcer',        color: '#3ecf8e', mood: 'ready' },
+                    hestia:     { icon: '🏠', name: 'Hestia',     role: 'The Explorer',        color: '#f0a0c8', mood: 'ready' },
+                    zeus:       { icon: '⚡', name: 'Zeus',       role: 'The Arbiter',         color: '#ffd700', mood: 'ready' },
+                    thor:       { icon: '🔨', name: 'Thor',       role: 'The Stress Tester',   color: '#4fc3f7', mood: 'ready' },
                 };
 
                 function selectAgent(agent, btn) {
@@ -5683,6 +5744,21 @@ public static class PlatinumForgeServer
                     if (btn) btn.classList.add('active');
                     document.getElementById('prompt-input').placeholder = `Ask ${AGENT_META[agent]?.name || agent}...`;
                     document.getElementById('prompt-input').focus();
+                }
+
+                function toggleChatPanel() {
+                    const panel = document.getElementById('chat-panel');
+                    const btn = document.getElementById('chat-toggle-btn');
+                    panel.classList.toggle('collapsed');
+                    btn.classList.toggle('visible', panel.classList.contains('collapsed'));
+                }
+
+                function setAgentMood(agent, mood) {
+                    if (AGENT_META[agent]) AGENT_META[agent].mood = mood;
+                    // Update any visible mood indicators in the chat
+                    document.querySelectorAll(`.chat-entry.${agent} .agent-mood`).forEach(el => {
+                        el.className = `agent-mood ${mood}`;
+                    });
                 }
 
                 async function sendChat() {
