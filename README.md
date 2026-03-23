@@ -1,10 +1,10 @@
 # Ψ PlatinumForge by WaveFunctionLabs
 
-> **Describe what you want. The Design Council refines it. The Forge builds it.**
+> **One idea. Eight agents. Nine stages. Working software.**
 
-PlatinumForge is a single-file C# web application that uses LLM-driven autonomous software generation. Define your intent and constraints — a council of AI agents helps you refine the specification, then a 10-stage pipeline generates a multi-file project with interfaces, implementations, tests, infrastructure, and a published artifact.
+PlatinumForge is a single-file C# web application (~6500 lines) that drives LLM-powered autonomous software generation from a single idea sentence. An 8-agent Design Council helps you refine constraints, then a 9-stage linear forge pipeline generates a multi-file project with full constraint traceability — from idea to shipped artifact.
 
-No scaffolding. No boilerplate. Constraints in → working code out.
+No scaffolding. No boilerplate. Idea in → traceable, validated, working code out.
 
 **Live:** [platinumforge.wavefunctionlabs.com](https://platinumforge.wavefunctionlabs.com)
 
@@ -12,37 +12,44 @@ No scaffolding. No boilerplate. Constraints in → working code out.
 
 ## ✨ Key Features
 
-- **🏛️ Design Council** — 6 specialised AI agents with distinct perspectives collaborate on your spec
-- **10-stage Forge pipeline** — Manifest → Interfaces → Tests → Code → Build → NFR → Soak → Integration → IaC → Publish
-- **Multi-file generation** — LLM plans a file manifest, then generates individual files (interfaces, services, controllers, models, enums, Program.cs, etc.)
-- **Configurable pipeline** — Enable/disable any stage (Playwright, Locust, Jest, IaC, etc.)
-- **Real-time progress** — Pipeline chevrons light up as stages run, with animated progress bar and elapsed timer
-- **🏠 Hestia enrichment** — LLM-powered button on every section that deepens rough ideas into production specs
-- **🧹 Dedupe** — LLM compaction that merges near-duplicate entries and normalises keys
-- **📤 Export / 📥 Import** — Download/upload definitions as JSON for portability
+- **🏛️ 8-Agent Design Council** — Zeus, Thor, Apollo, Prometheus, Hephaestus, Themis, Hestia, and Psi collaborate on your spec
+- **9-Stage Linear Forge** — Seed → Expansion → ConstraintForge → BehaviourForge → ShapeForge → BuildForge → GenerateForge → Validate → Ship
+- **Constraint traceability** — Every constraint gets a unique ID (C001, C002...) traced through acceptance criteria, architecture decisions, and tests
+- **Tests before code** — BuildForge generates all tests BEFORE GenerateForge writes code
+- **Linear wizard UI** — Step-by-step guided flow with council suggestions at each stage
+- **Council auto-suggest** — "Ask Council 🏛️" at any stage and all 8 agents propose items as checkboxes
+- **Multi-file generation** — LLM plans a file manifest, then generates individual files (interfaces, services, controllers, models, Program.cs, etc.)
+- **End-to-end build** — Generates .csproj, runs `dotnet build`, launches app, health-checks it
+- **Structured validation** — Compilation + test execution + constraint verification + architecture conformance
 - **Real-time collaboration** — SSE-based live sync across multiple browser tabs/users
-- **Quality sliders** — 12 dials (performance, security, readability, etc.) that shape generated code style
+- **Quality sliders** — 12 dials (performance, security, readability, etc.) that shape generated code
 - **Versioned builds** — Semver-tracked artifacts with full build history and download
 - **Multi-provider OAuth** — Google, Microsoft, GitHub, Facebook, Apple (or open-access local mode)
 - **Monaco editor** — Syntax-highlighted code viewer with multi-language support
-- **Single file** — The entire application is one `Program.cs` (~5500 lines, no frameworks, no ASP.NET)
+- **Single file** — The entire application is one `Program.cs` (~6500 lines, no frameworks, no ASP.NET)
 
 ---
 
-## 🏛️ Design Council — AI Agents
+## 🏛️ Design Council — 8 AI Agents
 
-PlatinumForge features a council of 6 AI agents, each with a unique perspective. Select an agent in the chat panel and they respond in character, with full awareness of your project's materialised metadata.
+PlatinumForge features a council of 8 AI agents, each with a unique perspective. Select an agent in the chat panel and they respond in character, with full awareness of your project's materialised metadata.
 
 | Agent | Role | Perspective |
 |-------|------|-------------|
 | **Ψ Psi** | General Designer | Balanced, helpful, opinionated — the default conversational agent |
-| **☀️ Apollo** | The Expander | Broadens the wavefunction of possibility — wild ideas, lateral thinking, "what if?" |
-| **🔥 Prometheus** | The Challenger | Questions and challenges requirements — probes assumptions, finds gaps |
-| **⚒️ Hephaestus** | The Builder | Practical engineering — data structures, patterns, architecture, DI, pipelines |
-| **⚖️ Themis** | The Enforcer | Enforces rules and consistency — blocks non-compliant changes, cross-references layers |
-| **🏠 Hestia** | The Explorer | Enriches concepts in depth — splits compound ideas, adds missing considerations |
+| **☀️ Apollo** | The Expander | Broadens possibility — wild ideas, lateral thinking, "what if?" |
+| **🔥 Prometheus** | The Challenger | Questions and challenges — probes assumptions, finds gaps |
+| **⚒️ Hephaestus** | The Builder | Practical engineering — data structures, patterns, architecture, DI |
+| **⚖️ Themis** | The Enforcer | Enforces rules and consistency — blocks non-compliant changes |
+| **🏠 Hestia** | The Explorer | Enriches concepts — splits compound ideas, adds missing considerations |
+| **⚡ Zeus** | The Arbiter | Resolves disagreements — overrides vetoes, makes final decisions when agents can't agree |
+| **🔨 Thor** | The Stress Tester | Execution physics — chaos engineering, performance bottlenecks, security under stress |
 
-Every agent can propose **actions** (add/remove/update entries in any layer) that you can apply with one click.
+Every agent can propose **actions** (add/remove/update entries in any layer) via the chat panel.
+
+The council participates at two key points:
+1. **Suggestion** — "Ask Council 🏛️" at any wizard stage fires all 8 agents to suggest items
+2. **Review gates** — After each pipeline stage, all agents review output with APPROVE / CONCERN / VETO
 
 ---
 
@@ -86,83 +93,70 @@ Every agent can propose **actions** (add/remove/update entries in any layer) tha
 
 ---
 
-## 🔄 Pipeline
-
-PlatinumForge follows a 7-phase conceptual pipeline:
+## 🔄 9-Stage Linear Forge Pipeline
 
 ```
-Intent → Constraints → Shape → Behaviour → Forge → Evolve → Commit
+Seed → Expansion → ConstraintForge → BehaviourForge → ShapeForge → BuildForge → GenerateForge → Validate → Ship
 ```
 
-### Layer Model
+### Stage Model
 
-| Phase | Layer | Description |
-|-------|-------|-------------|
-| **0 · Intent** | Description | What problem is being solved |
-| | Personas | Actors interacting with the system |
-| **1 · Constraints** | Rules | Design philosophy (pure functions, SRP, etc.) |
-| | Invariants | Conditions that must always hold |
-| **2 · Shape** | Architecture | System structure and decomposition |
-| | Dataflow | Data movement and transformation |
-| | Frameworks | Technology stack |
-| | Language | Implementation language |
-| | Deployment | Target environment (Azure, Docker, K8s, etc.) |
-| **3 · Behaviour** | Features | System capabilities |
-| | Stories | Functional requirements as flows |
-| | NFR | Non-functional requirements |
-| **Quality** | Sliders (0–100) | performance, latency, security, readability, simplicity, conciseness, ui-polish, test-coverage, error-handling, abstraction, layering, solid |
+| # | Stage | Purpose | Fields |
+|---|-------|---------|--------|
+| **1** | 🌱 **Seed** | Capture the raw idea | `idea` (string), `description` (string) |
+| **2** | 💡 **Expansion** | Interpret & expand the idea | `interpretations[]`, `personas[]` (exploratory), `personaLineage[]` |
+| **3** | ⚖️ **ConstraintForge** | Single source of truth for ALL constraints | `personas[]`, `rules[]`, `invariants[]`, `nfr[]`, `quality[]` + `constraintRegistry` (C001, C002...) |
+| **4** | 🎭 **BehaviourForge** | Define what the system must do | `features[]`, `stories[]`, `acceptanceCriteria[]` (with constraint refs) |
+| **5** | 🏗️ **ShapeForge** | Define how it will exist | `architecture`, `dataflow`, `frameworksAndTools`, `language`, `deploymentModel` (with constraint refs) |
+| **6** | 🧪 **BuildForge** | Tests FIRST — proof before generation | `unitTests[]`, `integrationTests[]`, `e2eTests[]`, `soakTests[]` (with constraint refs) |
+| **7** | ⚒️ **GenerateForge** | Generate the system | `fileManifest[]`, `interfaces`, `code`, `projectFiles` |
+| **8** | ✓ **Validate** | Ensure system is valid | compilation, testExecution, constraintVerification, architectureConformance |
+| **9** | 🚀 **Ship** | Output result | Publish versioned artifact or deploy |
 
-### Forge Pipeline (10 stages)
+### Constraint Traceability
 
-```mermaid
-graph LR
-    M[0. File Manifest] --> A[1. Interfaces]
-    A --> B[2. Unit Tests]
-    B --> C[3. Code]
-    C --> D{4. Build & Test}
-    D -->|Pass| E[5. NFR Tests<br/>Playwright]
-    D -->|Fail ×5| C
-    E --> F[6. Soak Tests<br/>Locust]
-    F --> G[7. Integration Tests<br/>Jest]
-    G --> H[8. Infrastructure<br/>Dockerfile, IaC]
-    H --> I[9. Publish<br/>Versioned ZIP]
+Every constraint registered in ConstraintForge gets a unique ID (C001, C002...). These IDs are traced through the entire pipeline:
 
-    style M fill:#1a1a2e,stroke:#3b82f6,color:#c9d1d9
-    style A fill:#1a1a2e,stroke:#3b82f6,color:#c9d1d9
-    style B fill:#1a1a2e,stroke:#3b82f6,color:#c9d1d9
-    style C fill:#1a1a2e,stroke:#3b82f6,color:#c9d1d9
-    style D fill:#1a1a2e,stroke:#60a5fa,color:#c9d1d9
-    style E fill:#1a1a2e,stroke:#bc8cff,color:#c9d1d9
-    style F fill:#1a1a2e,stroke:#bc8cff,color:#c9d1d9
-    style G fill:#1a1a2e,stroke:#bc8cff,color:#c9d1d9
-    style H fill:#1a1a2e,stroke:#bc8cff,color:#c9d1d9
-    style I fill:#1a1a2e,stroke:#3fb950,color:#c9d1d9
+```
+ConstraintForge (C001: "rule:no-sql-injection")
+  → BehaviourForge: acceptanceCriteria["input-validation"] refs [C001]
+  → ShapeForge: architecture["input-sanitisation-layer"] refs [C001]
+  → BuildForge: testConstraints["sql-injection-test"] refs [C001]
+  → Validate: constraintVerification checks C001 has test + AC coverage
 ```
 
-**Stage 0 — File Manifest:** The LLM plans the project file structure before generating any code.
+Nothing behaves, exists, or ships without traceable constraint lineage.
 
-**Stages 1–3 — Multi-file generation:** Interfaces and code are generated as individual files (one per interface, one per service/controller/model) rather than monolithic blobs. The LLM uses path-prefixed filenames (e.g. `Services/UserService.cs`, `Controllers/HomeController.cs`).
+### Council Review Gates
 
-**Stage 4 — Build & Test loop** retries up to 5 times with cascade regeneration. If a compilation error is detected in the test layer, it regenerates from tests upward. Only after unit tests pass do the external test stages run.
+After each pipeline stage, all 8 agents review the output:
+- **APPROVE** — output looks good, proceed
+- **CONCERN** — minor issues, OK to proceed
+- **VETO** — critical problem, pipeline pauses (Zeus can override)
 
-**Stages 5–8** are individually configurable (enable/disable in the Quality panel).
+### Validation Categories
 
-### Retry & Cascade Logic
+The Validate stage checks four dimensions:
+1. **Compilation** — Roslyn in-memory + `dotnet build`
+2. **Test Execution** — Unit tests must pass
+3. **Constraint Verification** — Every registered constraint must have test or AC coverage
+4. **Architecture Conformance** — Every architecture decision must trace to constraints
+
+Failures produce structured output: `{ stage, type, constraintId, message }`
+
+### Build & Test Retry Logic
 
 ```mermaid
 flowchart TD
-    Start[Clone State as Proposed] --> Inv{Invariant<br/>Check}
-    Inv -->|Violations| Regen[Set Regen Layer]
-    Inv -->|OK| Compile[Roslyn Compile]
+    Start[Clone State as Proposed] --> Compile[Roslyn Compile]
     Compile -->|Errors| Detect[Detect Error Layer]
-    Detect --> Regen
+    Detect --> Regen[Cascade Regenerate]
     Compile -->|OK| Run[Run Unit Tests]
     Run -->|Failures| Regen
-    Run -->|All Pass| Accept[Accept Proposed State<br/>Push Snapshot]
-    Regen --> Next{Attempt<br/>< 5?}
-    Next -->|Yes| Cascade[Regenerate from<br/>Lowest Error Layer]
+    Run -->|All Pass| Accept[Accept Proposed State]
+    Regen --> Next{Attempt < 5?}
+    Next -->|Yes| Start
     Next -->|No| Fail[Keep Previous State]
-    Cascade --> Start
 
     style Accept fill:#1a1a2e,stroke:#3fb950,color:#c9d1d9
     style Fail fill:#1a1a2e,stroke:#f85149,color:#c9d1d9
@@ -216,93 +210,69 @@ Configure one or more OAuth providers to enable sign-in. Without any credentials
 
 ## 🖥 UI Overview
 
-The UI is a 3-panel layout:
+The UI is a 3-panel layout with a linear wizard:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Ψ PlatinumForge   [project-name] v[0.1.0]  📦 Builds  📤 📥  🗂 Session  💾│
 ├────────────┬─────────────────────────────────┬───────────────────────────────┤
 │            │                                 │ Ψ Agents — Design Council    │
-│ CONSTRAINTS│    EDITOR TABS                  │                              │
-│            │                                 │ [Ψ Psi] [☀️ Apollo] [🔥 Pro] │
-│ ┌────────┐ │ 📄 Code | 🧪 Unit | 🎭 NFR |  │ [⚒️ Heph] [⚖️ Themis] [🏠] │
-│ │Intent  │ │ 🌊 Soak | 🔗 Int | 📋 Logs |  │─────────────────────────────│
-│ │Descript│ │ 🗂 Store                        │ ☀️ Apollo                    │
-│ │Personas│ │                                 │ What if you added a real-    │
-│ ├────────┤ │ ┌─────────────────────────────┐ │ time collaboration engine    │
-│ │Constr. │ │ │  📁 Store Files             │ │ using CRDTs? That would      │
-│ │Rules   │ │ │  🔌 Interfaces              │ │ let multiple users...        │
-│ │Invari. │ │ │    📄 IUserService.cs       │ │                              │
-│ ├────────┤ │ │    📄 ITaskService.cs       │ │ ▶ Add CRDT feature (features)│
-│ │Shape   │ │ │  💻 Services                │ │ ▶ Add collab arch (architect)│
-│ │Arch    │ │ │    📄 UserService.cs        │ │                              │
-│ │Dataflow│ │ │  🌐 Controllers             │ │ 🔥 Prometheus                │
-│ │Framewo.│ │ │    📄 UserController.cs     │ │ But have you considered the  │
-│ │Language│ │ │  📦 Models                   │ │ conflict resolution cost?    │
-│ │Deploy  │ │ │    📄 UserDto.cs            │ │                              │
-│ ├────────┤ │ │  🚀 Startup                 │ │─────────────────────────────│
-│ │Behav.  │ │ │    📄 Program.cs            │ │ [Ask Psi...]                 │
-│ │Feature.│ │ │  🧪 Unit Tests              │ │ [Ψ Send] [🔥 Generate] [↻]  │
-│ │Stories │ │ │  ☁️ Infrastructure           │ │                              │
-│ │NFR     │ │ └─────────────────────────────┘ │                              │
+│   WIZARD   │    EDITOR TABS                  │ (420px, collapsible)         │
+│            │                                 │ [Ψ] [☀️] [🔥] [⚒️]          │
+│ ┌────────┐ │ 📄 Code | 🧪 Unit | 🎭 E2E |  │ [⚖️] [🏠] [⚡] [🔨]        │
+│ │Step Bar│ │ 🌊 Soak | 🔗 Int | 📋 Logs |  │─────────────────────────────│
+│ │🌱💡⚖️🎭│ │ 🗂 Store                        │ Agent cards with avatars,   │
+│ │🏗️🧪⚒️✓🚀│ │                                 │ names, roles, mood dots     │
+│ ├────────┤ │ ┌─────────────────────────────┐ │                              │
+│ │        │ │ │  📁 Store Files             │ │ ☀️ Apollo — The Expander    │
+│ │ Stage  │ │ │  🔌 Interfaces              │ │ 🟢 ready                    │
+│ │Content │ │ │    📄 IUserService.cs       │ │ What if you added a real-   │
+│ │        │ │ │  💻 Services                │ │ time collaboration engine?  │
+│ │Suggest │ │ │    📄 UserService.cs        │ │                              │
+│ │ items  │ │ │  🚀 Startup                 │ │ ▶ Add feature               │
+│ │as ☑️   │ │ │    📄 Program.cs            │ │                              │
+│ │        │ │ │  🧪 Unit Tests              │ │ [Constraint C003 badge]     │
+│ ├────────┤ │ └─────────────────────────────┘ │                              │
+│ │◀ Back  │ │                                 │─────────────────────────────│
+│ │🏛️ Ask  │ │                                 │ [Ask Psi...]                 │
+│ │Next ▶  │ │                                 │ [Ψ Send] [🔥 Generate] [↻]  │
 │ └────────┘ │                                 │                              │
-│            │                                 │                              │
-│ 📜 History │                                 │                              │
 ├────────────┴─────────────────────────────────┴──────────────────────────────┤
-│ ▶ Intent ▶ Constraints ▶ Shape ▶ Behaviour ▶ Forge ▶ Evolve ▶ Commit      │
-│ [████████████████████░░░░░░░░░] Stage 3/9: Code Generation — 12.4s         │
+│ 🌱 Seed ▶ 💡 Expand ▶ ⚖️ Constrain ▶ 🎭 Behave ▶ 🏗️ Shape ▶ ... ▶ 🚀 Ship│
+│ [████████████████████░░░░░░░░░] Stage 7/9: GenerateForge — 24.1s           │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Left Panel — Constraints
-- 4 groups (Intent, Constraints, Shape, Behaviour) with expandable sections
-- Each section has: **+ Add**, **💾 Save**, **🏠 Hestia** (enrich), **🧹 Dedupe**, **🗑️ Clear**
-- ✕ delete button on individual items
-- **📋 Quick Fill** presets for rapid setup
-- Quality sliders and pipeline stage toggles
+### Left Panel — Linear Wizard (9 steps)
+- **Step indicator bar** at top showing all 9 stages with active/done/pending states
+- One stage visible at a time with contextual content:
+  - **Seed**: Text input for idea + description
+  - **Expansion**: Radio cards to pick from 3 council-expanded descriptions
+  - **ConstraintForge–ShapeForge**: Checkbox lists of council suggestions + custom add
+  - **BuildForge–Ship**: "▶ Run" buttons to execute pipeline stages
+- **🏛️ Ask Council** button fires all 8 agents to suggest items
+- **◀ Back** / **Save & Next ▶** navigation
+- Constraint ID badges (C001, C002...) on items in constraint stages
+- Agent avatar badges showing which agent suggested each item
 
 ### Centre Panel — Editor
 - Monaco editor with syntax highlighting
-- Tabs: Code, Unit Tests, NFR Tests, Soak Tests, Integration Tests, Logs, Store
+- Tabs: Code, Unit Tests, E2E Tests, Soak Tests, Integration Tests, Logs, Store
 - **Store** tab shows the generated file tree grouped by category
 
-### Right Panel — Chat (Ψ Agents)
-- Always visible — no toggle needed
-- Agent selector tabs along the top
-- Full chat history with colour-coded agent messages
-- Action buttons (▶) to apply suggested changes with one click
+### Right Panel — Chat (Ψ Agents, 420px, hideable)
+- Collapsible via ✕ button, reopens with Ψ edge button
+- 8 agent tabs wrapping to two rows
+- Agent cards: avatar icon + name + role subtitle + mood indicator dot
+- Mood states: 🟢 ready, 🟡 thinking (pulsing), 🔴 vetoed
+- Action buttons (▶) to apply suggested changes
 - Prompt input with Send, Generate, and Regen buttons
-
-### Store Tree Categories
-
-Generated files are grouped into folders:
-
-| Folder | Contents |
-|--------|----------|
-| 📋 Manifest | Planned file structure from LLM |
-| 🔌 Interfaces | Interface definitions (one per file) |
-| 🚀 Startup | Program.cs, Startup.cs |
-| 💻 Services | Service implementations |
-| 🌐 Controllers | API controllers/endpoints |
-| 📦 Models | DTOs, entities, request/response types |
-| 📑 Enums | Enumeration types |
-| 🗄️ Data | Repositories, DbContext, data access |
-| ⚙️ Config | Configuration, settings, options |
-| ✅ Validators | Validation logic |
-| ⚡ Helpers | Utilities, constants, static helpers |
-| 🔧 Extensions | Extension methods |
-| 🔗 Middleware | HTTP middleware, filters |
-| 🧪 Unit Tests | Roslyn-compiled test assertions |
-| 🎭 NFR Tests | Playwright TypeScript tests |
-| 🌊 Soak Tests | Locust Python load tests |
-| 🔗 Integration Tests | Jest TypeScript tests |
-| ☁️ Infrastructure | Dockerfile, IaC, CI/CD |
 
 ---
 
 ## 📦 Build Artifacts
 
-Each successful Forge run publishes a versioned ZIP:
+Each successful Ship stage publishes a versioned ZIP:
 
 ```
 ~/.platinumforge/artifacts/my-project/
@@ -316,30 +286,27 @@ Each ZIP contains:
 ```
 my-project-v0.1.0/
 ├── SPEC.md                        # Full pipeline specification
-├── constraints.json               # All layer constraints as JSON
+├── constraints.json               # All constraints with IDs (C001...)
 ├── generated.cs                   # Complete assembled source (for Roslyn)
 ├── src/
 │   ├── Interfaces/
-│   │   ├── IUserService.cs
-│   │   └── ITaskService.cs
+│   │   └── IUserService.cs
 │   ├── Services/
 │   │   └── UserService.cs
 │   ├── Controllers/
 │   │   └── UserController.cs
 │   ├── Models/
 │   │   └── UserDto.cs
-│   ├── Startup/
-│   │   └── Program.cs
-│   └── Tests/
-│       └── CoreTests.cs
+│   └── Startup/
+│       └── Program.cs
 ├── tests/
-│   ├── nfr-tests.spec.ts          # Playwright tests
+│   ├── unit/                      # Roslyn-compiled C# tests
+│   ├── e2e-tests.spec.ts          # Playwright tests
 │   ├── locustfile.py              # Locust load tests
 │   └── integration.test.ts        # Jest tests
-└── iac/
-    ├── Dockerfile
-    ├── docker-compose.yml
-    └── deploy.bicep
+└── project/
+    ├── *.csproj
+    └── build-config.json          # Build/run/health-check commands
 ```
 
 ---
@@ -350,11 +317,19 @@ my-project-v0.1.0/
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/state` | Full system state (all layers) |
+| `GET` | `/api/state` | Full system state (all stages) |
 | `POST` | `/api/state` | Update constraints (merge) |
-| `POST` | `/api/prompt` | Submit prompt → start generation |
+| `POST` | `/api/prompt` | Submit prompt → start full pipeline |
+| `POST` | `/api/pipeline/step` | Run a single stage (`{ stage }`) |
 | `GET` | `/api/code` | Current generated source |
 | `GET` | `/api/generating` | Generation in progress? |
+
+### Council & Constraints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/council/suggest` | Ask council to suggest items for a stage (`{ stage }`) |
+| `POST` | `/api/constraints/register` | Register a constraint, get ID (`{ type, key }` → `{ constraintId: "C001" }`) |
 
 ### Chat & Agents
 
@@ -404,6 +379,9 @@ my-project-v0.1.0/
 | `code` | `{ code }` | Source code updates |
 | `generating` | `{ generating }` | Pipeline status |
 | `progress` | `{ stage, total, name, status, detail }` | Pipeline stage progress |
+| `pipeline-vetoed` | `{ stage, agent, message }` | Council veto halts pipeline |
+| `validation-results` | `{ failures: [{ stage, type, constraintId, message }] }` | Structured validation output |
+| `stage-complete` | `{ stage, status, reviews }` | Stage + council review results |
 | `test-result` | `{ category, runner, exitCode, output }` | Test runner results |
 | `artifact` | `{ fileName, version }` | Build published |
 | `ping` | `{ clients }` | Heartbeat + client count |
@@ -412,19 +390,19 @@ my-project-v0.1.0/
 
 ## 🧠 How It Works
 
-PlatinumForge treats code generation as **constraint satisfaction**, not instruction execution.
+PlatinumForge treats code generation as **constraint satisfaction with full traceability**, not instruction execution.
 
-1. **You define constraints** across 4 groups (Intent, Constraints, Shape, Behaviour)
-2. **The Design Council** (6 AI agents) helps you refine those constraints from different perspectives
-3. **🏠 Hestia enriches** rough ideas into detailed specifications
-4. **The LLM plans** a file manifest before generating any code
-5. **Multi-file generation** produces individual interfaces, services, controllers, models, etc.
-6. **Roslyn compilation** validates the code and runs unit tests in-memory
-7. **A dual-state model** (`current` vs `proposed`) ensures atomicity — changes only commit when all tests pass
-8. **External test runners** (Playwright, Locust, Jest) validate beyond unit tests
-9. **Versioned artifacts** capture everything needed to recreate the system
+1. **You enter an idea** — one sentence in the Seed stage
+2. **The council expands it** — 3 agents generate expanded descriptions, you pick one
+3. **You define constraints** — guided by the wizard, with council suggestions at every step
+4. **Every constraint gets an ID** — C001, C002... tracked through the entire pipeline
+5. **Tests are generated FIRST** — BuildForge creates tests before any code exists
+6. **Code is generated to satisfy tests** — GenerateForge produces interfaces, implementations, project files
+7. **Structured validation** — compilation, test execution, constraint verification, architecture conformance
+8. **Council reviews every stage** — 8 agents vote APPROVE/CONCERN/VETO
+9. **Ship** — versioned artifact with full constraint traceability
 
-The mental model: *You are not writing code. You are resolving a system that satisfies all defined constraints, guided by a council of AI agents with complementary perspectives.*
+The mental model: *You are not writing code. You are resolving a system where every constraint has a unique ID, every architecture decision traces to constraints, every test proves constraints, and nothing ships without full lineage.*
 
 ---
 
