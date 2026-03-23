@@ -2313,6 +2313,92 @@ public static class PlatinumForgeServer
                     body = JsonSerializer.Serialize(new { ok = false, error = ex.Message });
                 }
             }
+            else if (path == "/api/dedupe" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var layer = doc.RootElement.GetProperty("layer").GetString() ?? "";
+
+                var dict = layer switch {
+                    "description" => live.State.Description, "personas" => live.State.Personas,
+                    "rules" => live.State.Rules, "invariants" => live.State.Invariants,
+                    "architecture" => live.State.Architecture, "dataflow" => live.State.Dataflow,
+                    "frameworks" => live.State.Frameworks, "language" => live.State.Language,
+                    "deployment" => live.State.Deployment, "features" => live.State.Features,
+                    "stories" => live.State.Stories, "nfr" => live.State.NFR,
+                    "codeTweaks" => live.State.CodeTweaks, "testTweaks" => live.State.TestTweaks,
+                    "iac" => live.State.IaC, "deployTweaks" => live.State.DeployTweaks,
+                    _ => null
+                };
+                if (dict == null || dict.Count == 0)
+                {
+                    body = JsonSerializer.Serialize(new { ok = true, result = "{}", layer, removed = 0 });
+                }
+                else
+                {
+                    var currentJson = JsonSerializer.Serialize(dict, new JsonSerializerOptions { WriteIndented = true });
+                    try
+                    {
+                        var deduped = await OpenAIClient.Complete(
+                            """
+                            You are a deduplication and compaction assistant for PlatinumForge by WaveFunctionLabs.
+                            Your job is to clean up a JSON dictionary of specification entries by removing duplicates and merging near-duplicates.
+
+                            Rules:
+                            - Remove exact duplicates (same meaning, different wording)
+                            - Merge near-duplicates into a single, well-worded entry
+                            - Consolidate entries that overlap significantly
+                            - Use the clearest, most specific wording from the merged entries
+                            - Preserve all genuinely distinct ideas — do NOT remove unique entries
+                            - Normalise key names to be consistent (camelCase, concise)
+                            - Keep values concise (1-3 sentences max)
+                            - Output ONLY a valid JSON object, no markdown fences, no explanation
+                            - The result must be a flat key-value dictionary: {"key": "value", ...}
+                            """,
+                            $"""
+                            Deduplicate and compact this "{layer}" layer dictionary.
+                            Current content ({dict.Count} entries):
+                            {currentJson}
+
+                            Return a cleaned JSON object with duplicates removed and near-duplicates merged.
+                            """);
+
+                        var stripped = Generator.StripMarkdownFences(deduped);
+                        var newDict = JsonSerializer.Deserialize<Dictionary<string, string>>(stripped) ?? new();
+                        var removed = dict.Count - newDict.Count;
+
+                        // Apply the deduped result back to state
+                        Action<Dictionary<string, string>> setter = layer switch {
+                            "description" => d => live.State.Description = d,
+                            "personas" => d => live.State.Personas = d,
+                            "rules" => d => live.State.Rules = d,
+                            "invariants" => d => live.State.Invariants = d,
+                            "architecture" => d => live.State.Architecture = d,
+                            "dataflow" => d => live.State.Dataflow = d,
+                            "frameworks" => d => live.State.Frameworks = d,
+                            "language" => d => live.State.Language = d,
+                            "deployment" => d => live.State.Deployment = d,
+                            "features" => d => live.State.Features = d,
+                            "stories" => d => live.State.Stories = d,
+                            "nfr" => d => live.State.NFR = d,
+                            "codeTweaks" => d => live.State.CodeTweaks = d,
+                            "testTweaks" => d => live.State.TestTweaks = d,
+                            "iac" => d => live.State.IaC = d,
+                            "deployTweaks" => d => live.State.DeployTweaks = d,
+                            _ => _ => {}
+                        };
+                        setter(newDict);
+                        meta.CommitState(live.SessionId, live.State);
+                        _ = live.BroadcastAll("state", new Dictionary<string, object> { [layer] = newDict });
+
+                        body = JsonSerializer.Serialize(new { ok = true, result = stripped, layer, removed });
+                    }
+                    catch (Exception ex)
+                    {
+                        body = JsonSerializer.Serialize(new { ok = false, error = ex.Message });
+                    }
+                }
+            }
             else if (path == "/api/commit" && method == "POST")
             {
                 var file = CommitLiveToDisk(meta);
@@ -4217,6 +4303,7 @@ public static class PlatinumForgeServer
                                     <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
                                     <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
                                     <button class="btn-sm" onclick="enrichLayer('${layer}')" style="color:#a78bfa;">✨ Enrich</button>
+                                    <button class="btn-sm" onclick="dedupeLayer('${layer}')" style="color:#58a6ff;">🧹 Dedupe</button>
                                     <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
                                     ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
                                 </div>
@@ -4288,6 +4375,33 @@ public static class PlatinumForgeServer
                         appendChatEntry('error', `Enrich failed: ${ex.message}`);
                     } finally {
                         if (enrichBtn) { enrichBtn.textContent = origText; enrichBtn.disabled = false; }
+                    }
+                }
+
+                async function dedupeLayer(layer) {
+                    const bodyEl = document.getElementById('body-' + layer);
+                    const dedupeBtn = bodyEl?.querySelector('[onclick*="dedupeLayer"]');
+                    const origText = dedupeBtn?.textContent;
+                    if (dedupeBtn) { dedupeBtn.textContent = '⏳ Deduping...'; dedupeBtn.disabled = true; }
+                    try {
+                        await saveConstraints(layer);
+                        const r = await apiFetch('/api/dedupe', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ layer })
+                        });
+                        const d = await r.json();
+                        if (!d.ok) throw new Error(d.error || 'Dedupe failed');
+                        const parsed = JSON.parse(d.result);
+                        currentState[layer] = parsed;
+                        renderConstraints();
+                        const newBody = document.getElementById('body-' + layer);
+                        if (newBody) newBody.classList.add('open');
+                        appendChatEntry('system', `🧹 Deduped ${layer}: removed ${d.removed} duplicate(s), ${Object.keys(parsed).length} entries remain`);
+                    } catch (ex) {
+                        appendChatEntry('error', `Dedupe failed: ${ex.message}`);
+                    } finally {
+                        if (dedupeBtn) { dedupeBtn.textContent = origText; dedupeBtn.disabled = false; }
                     }
                 }
 
