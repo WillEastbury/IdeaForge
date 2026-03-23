@@ -21,7 +21,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Emit;
 
 // ─────────────────────────────────────────────
-// Virtual TDD Engine — Single-file C# console app
+// What if software built itself? — Single-file C# console app
 // ─────────────────────────────────────────────
 
 // ── SystemState ──────────────────────────────
@@ -447,7 +447,7 @@ public static class Generator
 {
     private const string SystemPromptBase =
         """
-        You are a code generation engine for a virtual TDD system.
+        You are a code generation engine for a autonomous software generation system.
         You output ONLY raw C# code. No markdown fences, no explanations.
         The code will be placed inside `namespace App { }`.
         Do NOT produce a Main method. Do NOT use top-level statements.
@@ -853,15 +853,15 @@ public static class AuthManager
     private static readonly HttpClient Http = new();
 
     private static readonly string BaseUrl =
-        (Environment.GetEnvironmentVariable("IDEAFORGE_BASE_URL") ?? "http://localhost:5005").TrimEnd('/');
+        (Environment.GetEnvironmentVariable("PLATINUMFORGE_BASE_URL") ?? "http://localhost:5005").TrimEnd('/');
 
     // HMAC key for signing auth cookies (generated per-process, or from env)
     private static readonly byte[] HmacKey = GetOrCreateHmacKey();
 
-    // Data root: configurable via IDEAFORGE_DATA_DIR, defaults to ~/.ideaforge
+    // Data root: configurable via PLATINUMFORGE_DATA_DIR, defaults to ~/.platinumforge
     public static readonly string DataRoot =
-        Environment.GetEnvironmentVariable("IDEAFORGE_DATA_DIR")
-        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ideaforge");
+        Environment.GetEnvironmentVariable("PLATINUMFORGE_DATA_DIR")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".platinumforge");
 
     // In-memory user cache: sub → UserProfile
     private static readonly ConcurrentDictionary<string, UserProfile> Users = new();
@@ -1003,7 +1003,7 @@ public static class AuthManager
 
     private static byte[] GetOrCreateHmacKey()
     {
-        var envKey = Environment.GetEnvironmentVariable("IDEAFORGE_HMAC_KEY");
+        var envKey = Environment.GetEnvironmentVariable("PLATINUMFORGE_HMAC_KEY");
         if (!string.IsNullOrEmpty(envKey))
             return Convert.FromBase64String(envKey);
         var key = new byte[32];
@@ -1040,7 +1040,7 @@ public static class AuthManager
     public static string? GetSubFromRequest(HttpListenerRequest req)
     {
         var cookies = req.Cookies;
-        var authCookie = cookies["ideaforge_auth"];
+        var authCookie = cookies["platinumforge_auth"];
         return ValidateCookie(authCookie?.Value);
     }
 
@@ -1116,7 +1116,7 @@ public static class AuthManager
         var userReq = new HttpRequestMessage(HttpMethod.Get, provider.UserInfoUrl);
         userReq.Headers.Add("Authorization", $"Bearer {accessToken}");
         if (provider.Name == "github")
-            userReq.Headers.Add("User-Agent", "IdeaForge");
+            userReq.Headers.Add("User-Agent", "PlatinumForge");
         var userResp = await Http.SendAsync(userReq);
         var userJson = await userResp.Content.ReadAsStringAsync();
         if (!userResp.IsSuccessStatusCode) return null;
@@ -1131,7 +1131,7 @@ public static class AuthManager
             {
                 var emailReq = new HttpRequestMessage(HttpMethod.Get, "https://api.github.com/user/emails");
                 emailReq.Headers.Add("Authorization", $"Bearer {accessToken}");
-                emailReq.Headers.Add("User-Agent", "IdeaForge");
+                emailReq.Headers.Add("User-Agent", "PlatinumForge");
                 var emailResp = await Http.SendAsync(emailReq);
                 if (emailResp.IsSuccessStatusCode)
                 {
@@ -1343,9 +1343,9 @@ public class LiveSession
     }
 }
 
-// ── HTTP UI (IdeaForge) ─────────────────────
+// ── HTTP UI (PlatinumForge) ─────────────────────
 
-public static class IdeaForgeServer
+public static class PlatinumForgeServer
 {
     private static HttpListener? _listener;
 
@@ -1631,7 +1631,7 @@ public static class IdeaForgeServer
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://+:{port}/");
         _listener.Start();
-        Console.WriteLine($"  → IdeaForge UI at http://localhost:{port} (all interfaces)");
+        Console.WriteLine($"  → PlatinumForge UI at http://localhost:{port} (all interfaces)");
         Console.WriteLine($"  → Data directory: {AuthManager.DataRoot}");
         if (AuthManager.IsConfigured)
         {
@@ -1725,7 +1725,7 @@ public static class IdeaForgeServer
             }
             else if (path == "/auth/logout")
             {
-                ctx.Response.SetCookie(new Cookie("ideaforge_auth", "") { Expires = DateTime.UtcNow.AddDays(-1), Path = "/" });
+                ctx.Response.SetCookie(new Cookie("platinumforge_auth", "") { Expires = DateTime.UtcNow.AddDays(-1), Path = "/" });
                 ctx.Response.Redirect("/auth/login");
                 ctx.Response.Close();
                 return;
@@ -2029,7 +2029,7 @@ public static class IdeaForgeServer
                         var chatHistory = string.Join("\n", live.ChatLog.TakeLast(20).Select(c => $"[{c.Role}] {c.Message}"));
                         var response = await OpenAIClient.Complete(
                             """
-                            You are a collaborative design agent for IdeaForge, a virtual TDD code generator.
+                            You are a collaborative design agent for PlatinumForge, an autonomous software generation platform.
                             You help users refine their project specification across these layers:
                             description, personas, rules, invariants, architecture, dataflow, frameworks, language,
                             deployment, features, stories, nfr, codeTweaks, testTweaks, iac, deployTweaks, architectureTweaks.
@@ -2259,7 +2259,7 @@ public static class IdeaForgeServer
                     : meta.CurrentSessionId;
                 CommitLiveToDisk(meta);
                 var token = AuthManager.CreateShareToken(sessionId, userSub);
-                var baseUrl = (Environment.GetEnvironmentVariable("IDEAFORGE_BASE_URL") ?? "http://localhost:5005").TrimEnd('/');
+                var baseUrl = (Environment.GetEnvironmentVariable("PLATINUMFORGE_BASE_URL") ?? "http://localhost:5005").TrimEnd('/');
                 var shareUrl = $"{baseUrl}/share/{token}";
                 live.AddChat("success", $"🔗 Share link created");
                 _ = live.BroadcastAll("chat", new { role = "success", message = "🔗 Share link created — collaborators will join this session" });
@@ -2407,7 +2407,7 @@ public static class IdeaForgeServer
     private static void SetAuthCookie(HttpListenerResponse resp, string sub)
     {
         var value = AuthManager.CreateAuthCookie(sub);
-        resp.SetCookie(new Cookie("ideaforge_auth", value) { Path = "/" });
+        resp.SetCookie(new Cookie("platinumforge_auth", value) { Path = "/" });
     }
 
     private static async Task WriteResponse(HttpListenerContext ctx, string body, string contentType, int statusCode = 200)
@@ -2437,7 +2437,7 @@ public static class IdeaForgeServer
                 await BroadcastChat(live, "system", "💭 Interpreting prompt...");
                 var constraintJson = $"Rules: {JsonSerializer.Serialize(live.State.Rules)}\nArchitecture: {JsonSerializer.Serialize(live.State.Architecture)}\nNFR: {JsonSerializer.Serialize(live.State.NFR)}\nInvariants: {JsonSerializer.Serialize(live.State.Invariants)}";
                 var interpretation = await OpenAIClient.Complete(
-                    "You update system constraints for a virtual TDD engine. Output ONLY valid JSON, no markdown.",
+                    "You update system constraints for a autonomous software generation engine. Output ONLY valid JSON, no markdown.",
                     $"""
                     Current constraints:
                     {constraintJson}
@@ -2682,7 +2682,7 @@ public static class IdeaForgeServer
             return;
         }
 
-        var tempDir = Path.Combine(Path.GetTempPath(), $"ideaforge-{category}-{Guid.NewGuid():N}");
+        var tempDir = Path.Combine(Path.GetTempPath(), $"platinumforge-{category}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
 
         try
@@ -2861,7 +2861,7 @@ public static class IdeaForgeServer
             buildNum++;
         }
 
-        var tempDir = Path.Combine(Path.GetTempPath(), $"ideaforge-publish-{Guid.NewGuid():N}");
+        var tempDir = Path.Combine(Path.GetTempPath(), $"platinumforge-publish-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
 
         try
@@ -2983,7 +2983,7 @@ public static class IdeaForgeServer
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>IdeaForge — Sign In</title>
+            <title>PlatinumForge — Sign In</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -3001,8 +3001,8 @@ public static class IdeaForgeServer
         <body>
             <div class="login-card">
                 <div class="logo-icon">🔥</div>
-                <div class="logo-text">IdeaForge</div>
-                <div class="logo-sub">Virtual TDD Engine</div>
+                <div class="logo-text">PlatinumForge</div>
+                <div class="logo-sub">What if software built itself?</div>
                 <div class="login-buttons">
                     {{buttons}}
                 </div>
@@ -3020,7 +3020,7 @@ public static class IdeaForgeServer
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>IdeaForge — Virtual TDD</title>
+            <title>PlatinumForge — PlatinumForge</title>
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 :root {
@@ -3211,8 +3211,8 @@ public static class IdeaForgeServer
                 <div class="logo">
                     <span class="logo-icon">🔥</span>
                     <div>
-                        <div class="logo-text">IdeaForge</div>
-                        <div class="logo-sub">Virtual TDD Engine</div>
+                        <div class="logo-text">PlatinumForge</div>
+                        <div class="logo-sub">What if software built itself?</div>
                     </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px; margin-left:16px;">
@@ -4349,11 +4349,11 @@ public class Program
     public static async Task Main(string[] args)
     {
         Console.WriteLine("╔══════════════════════════════════════╗");
-        Console.WriteLine("║    🔥 IdeaForge — Virtual TDD v0.3  ║");
+        Console.WriteLine("║    🔥 PlatinumForge — PlatinumForge v0.4  ║");
         Console.WriteLine("╚══════════════════════════════════════╝");
 
         // Start web server (user init happens on first request per-user)
-        IdeaForgeServer.Start();
+        PlatinumForgeServer.Start();
 
         Console.WriteLine("\n🌐 Open the URL shown above in your browser");
         Console.WriteLine("   Sign in to access your workspace.");
@@ -4364,7 +4364,7 @@ public class Program
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; tcs.TrySetResult(); };
         await tcs.Task;
 
-        IdeaForgeServer.Stop();
+        PlatinumForgeServer.Stop();
     }
 
     public static int DetectLayer(string[] srcLines, int errLine)

@@ -16,5 +16,5 @@ obj/
 .DS_Store
 Thumbs.db
 
-# IdeaForge runtime data (sessions, builds, user data)
-.ideaforge/
+# PlatinumForge runtime data (sessions, builds, user data)
+.platinumforge/

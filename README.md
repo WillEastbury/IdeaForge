@@ -1,8 +1,8 @@
-# 🔥 IdeaForge — Virtual TDD Engine
+# 🔥 PlatinumForge — What if software built itself?
 
-> **Describe what you want. IdeaForge generates, tests, and publishes it.**
+> **Describe what you want. PlatinumForge generates, tests, and publishes it.**
 
-IdeaForge is a single-file C# web application that uses LLM-driven constraint satisfaction to generate working code through a virtual TDD pipeline. Define your intent, constraints, and architecture — the engine generates interfaces, tests, code, runs them, and publishes a versioned artifact.
+PlatinumForge is a single-file C# web application that uses LLM-driven constraint satisfaction to generate working code through a autonomous software generation pipeline. Define your intent, constraints, and architecture — the engine generates interfaces, tests, code, runs them, and publishes a versioned artifact.
 
 No scaffolding. No boilerplate. Just constraints in → working code out.
 
@@ -50,7 +50,7 @@ No scaffolding. No boilerplate. Just constraints in → working code out.
 │  └──────────────────────────────────────┘            │
 │                                                      │
 │  ┌──────────────────────────────────────────────────┐│
-│  │  ~/.ideaforge/                                   ││
+│  │  ~/.platinumforge/                                   ││
 │  │  ├── users/{sub}/sessions/{id}/store.json       ││
 │  │  ├── users/{sub}/builds.json                    ││
 │  │  ├── artifacts/{project}/{project}-v{ver}.zip   ││
@@ -63,7 +63,7 @@ No scaffolding. No boilerplate. Just constraints in → working code out.
 
 ## 🔄 Pipeline
 
-IdeaForge follows a 7-phase conceptual pipeline:
+PlatinumForge follows a 7-phase conceptual pipeline:
 
 ```
 Intent → Constraints → Shape → Behaviour → Forge → Evolve → Commit
@@ -147,7 +147,7 @@ flowchart TD
 export OPENAI_API_KEY="sk-..."
 
 # Build and run
-cd VirtualTDD
+cd PlatinumForge
 dotnet run
 ```
 
@@ -170,8 +170,8 @@ Open **http://localhost:5005** in your browser.
 | `FACEBOOK_CLIENT_SECRET` | *(disabled)* | Facebook OAuth App secret |
 | `APPLE_CLIENT_ID` | *(disabled)* | Apple Services ID |
 | `APPLE_CLIENT_SECRET` | *(disabled)* | Apple client secret (pre-generated JWT) |
-| `IDEAFORGE_DATA_DIR` | `~/.ideaforge` | Root directory for all persistent data (users, sessions, artifacts) |
-| `IDEAFORGE_BASE_URL` | `http://localhost:5005` | Base URL for OAuth redirects |
+| `PLATINUMFORGE_DATA_DIR` | `~/.platinumforge` | Root directory for all persistent data (users, sessions, artifacts) |
+| `PLATINUMFORGE_BASE_URL` | `http://localhost:5005` | Base URL for OAuth redirects |
 
 Configure one or more providers to enable sign-in. Without any OAuth credentials, auth is disabled and the app runs in open-access "local" mode. The login page dynamically shows buttons only for configured providers.
 
@@ -183,7 +183,7 @@ The UI is split into three panels:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ 🔥 IdeaForge    [project-name] v[0.1.0]   📦 Builds  🗂 Session │
+│ 🔥 PlatinumForge    [project-name] v[0.1.0]   📦 Builds  🗂 Session │
 ├──────────────┬───────────────────────┬───────────────────────────┤
 │              │                       │                           │
 │  CONSTRAINTS │     CHAT / PROMPT     │    EDITOR TABS            │
@@ -232,7 +232,7 @@ The UI is split into three panels:
 Each successful Forge run publishes a versioned ZIP:
 
 ```
-~/.ideaforge/artifacts/my-project/
+~/.platinumforge/artifacts/my-project/
 ├── my-project-v0.1.0.zip
 ├── my-project-v0.1.1.zip
 └── my-project-v0.2.0.zip
@@ -317,7 +317,7 @@ Version auto-increments (patch) after each publish. Browse and download all buil
 
 ## 🧠 How It Works
 
-IdeaForge treats code generation as **constraint satisfaction**, not instruction execution.
+PlatinumForge treats code generation as **constraint satisfaction**, not instruction execution.
 
 1. **You define constraints** across 4 groups (Intent, Constraints, Shape, Behaviour)
 2. **The LLM resolves** a system that satisfies all constraints
@@ -367,4 +367,4 @@ MIT
 
 ---
 
-*Built with 🔥 by the IdeaForge team*
+*Built with 🔥 by the PlatinumForge team*
