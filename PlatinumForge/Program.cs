@@ -1352,28 +1352,40 @@ public static class PlatinumForgeServer
     // Ψ logo SVG — ideas converging on a psi/tuning fork with swirling waves
     private const string PsiLogoSvg = @"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
       <defs>
-        <linearGradient id='g1' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#3b82f6'/><stop offset='100%' stop-color='#93c5fd'/></linearGradient>
-        <linearGradient id='g2' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#60a5fa' stop-opacity='0.6'/><stop offset='100%' stop-color='#3b82f6' stop-opacity='0.2'/></linearGradient>
+        <linearGradient id='psi-g1' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#3b82f6'/><stop offset='100%' stop-color='#93c5fd'/></linearGradient>
+        <linearGradient id='psi-g2' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#60a5fa' stop-opacity='0.6'/><stop offset='100%' stop-color='#3b82f6' stop-opacity='0.15'/></linearGradient>
       </defs>
-      <!-- swirling wave arcs converging -->
-      <path d='M15 28 Q30 10, 50 22' stroke='url(#g2)' stroke-width='2.5' fill='none' opacity='0.7'><animate attributeName='d' values='M15 28 Q30 10, 50 22;M15 24 Q30 14, 50 22;M15 28 Q30 10, 50 22' dur='3s' repeatCount='indefinite'/></path>
-      <path d='M85 28 Q70 10, 50 22' stroke='url(#g2)' stroke-width='2.5' fill='none' opacity='0.7'><animate attributeName='d' values='M85 28 Q70 10, 50 22;M85 24 Q70 14, 50 22;M85 28 Q70 10, 50 22' dur='3s' repeatCount='indefinite'/></path>
-      <path d='M22 18 Q36 4, 50 16' stroke='url(#g2)' stroke-width='1.8' fill='none' opacity='0.5'><animate attributeName='d' values='M22 18 Q36 4, 50 16;M22 14 Q36 8, 50 16;M22 18 Q36 4, 50 16' dur='2.5s' repeatCount='indefinite'/></path>
-      <path d='M78 18 Q64 4, 50 16' stroke='url(#g2)' stroke-width='1.8' fill='none' opacity='0.5'><animate attributeName='d' values='M78 18 Q64 4, 50 16;M78 14 Q64 8, 50 16;M78 18 Q64 4, 50 16' dur='2.5s' repeatCount='indefinite'/></path>
-      <!-- idea dots converging -->
-      <circle r='2.5' fill='#93c5fd' opacity='0.8'><animateMotion dur='2s' repeatCount='indefinite' path='M20 30 Q35 15, 50 28'/></circle>
-      <circle r='2.5' fill='#93c5fd' opacity='0.8'><animateMotion dur='2s' repeatCount='indefinite' path='M80 30 Q65 15, 50 28'/></circle>
-      <circle r='2' fill='#60a5fa' opacity='0.6'><animateMotion dur='2.8s' repeatCount='indefinite' path='M28 22 Q40 8, 50 24'/></circle>
-      <circle r='2' fill='#60a5fa' opacity='0.6'><animateMotion dur='2.8s' repeatCount='indefinite' path='M72 22 Q60 8, 50 24'/></circle>
-      <!-- Ψ psi/tuning fork -->
-      <path d='M35 30 Q35 50, 50 55 M65 30 Q65 50, 50 55 M50 55 L50 85' stroke='url(#g1)' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/>
-      <circle cx='50' cy='28' r='3' fill='url(#g1)' opacity='0.9'/>
-      <!-- base -->
-      <ellipse cx='50' cy='87' rx='8' ry='3' fill='url(#g1)' opacity='0.5'/>
+      <!-- outer swirling wave arcs -->
+      <path d='M12 35 Q28 12, 50 26' stroke='url(#psi-g2)' stroke-width='2.5' fill='none' opacity='0.7'>
+        <animate attributeName='d' values='M12 35 Q28 12, 50 26;M12 30 Q28 18, 50 26;M12 35 Q28 12, 50 26' dur='3s' repeatCount='indefinite'/></path>
+      <path d='M88 35 Q72 12, 50 26' stroke='url(#psi-g2)' stroke-width='2.5' fill='none' opacity='0.7'>
+        <animate attributeName='d' values='M88 35 Q72 12, 50 26;M88 30 Q72 18, 50 26;M88 35 Q72 12, 50 26' dur='3s' repeatCount='indefinite'/></path>
+      <!-- inner swirling wave arcs -->
+      <path d='M20 25 Q34 8, 50 20' stroke='url(#psi-g2)' stroke-width='1.8' fill='none' opacity='0.5'>
+        <animate attributeName='d' values='M20 25 Q34 8, 50 20;M20 21 Q34 14, 50 20;M20 25 Q34 8, 50 20' dur='2.4s' repeatCount='indefinite'/></path>
+      <path d='M80 25 Q66 8, 50 20' stroke='url(#psi-g2)' stroke-width='1.8' fill='none' opacity='0.5'>
+        <animate attributeName='d' values='M80 25 Q66 8, 50 20;M80 21 Q66 14, 50 20;M80 25 Q66 8, 50 20' dur='2.4s' repeatCount='indefinite'/></path>
+      <!-- idea dots converging from sides -->
+      <circle r='2.5' fill='#93c5fd' opacity='0.8'><animateMotion dur='2s' repeatCount='indefinite' path='M-30 8 Q-10 -10, 0 0'/><set attributeName='cx' to='50'/><set attributeName='cy' to='28'/></circle>
+      <circle r='2.5' fill='#93c5fd' opacity='0.8'><animateMotion dur='2s' repeatCount='indefinite' path='M30 8 Q10 -10, 0 0'/><set attributeName='cx' to='50'/><set attributeName='cy' to='28'/></circle>
+      <circle r='2' fill='#60a5fa' opacity='0.6'><animateMotion dur='2.6s' repeatCount='indefinite' path='M-22 -2 Q-8 -12, 0 -4'/><set attributeName='cx' to='50'/><set attributeName='cy' to='24'/></circle>
+      <circle r='2' fill='#60a5fa' opacity='0.6'><animateMotion dur='2.6s' repeatCount='indefinite' path='M22 -2 Q8 -12, 0 -4'/><set attributeName='cx' to='50'/><set attributeName='cy' to='24'/></circle>
+      <!-- Ψ left prong -->
+      <path d='M32 28 C32 42, 38 52, 50 58' stroke='url(#psi-g1)' stroke-width='4' fill='none' stroke-linecap='round'/>
+      <!-- Ψ right prong -->
+      <path d='M68 28 C68 42, 62 52, 50 58' stroke='url(#psi-g1)' stroke-width='4' fill='none' stroke-linecap='round'/>
+      <!-- Ψ stem -->
+      <line x1='50' y1='58' x2='50' y2='88' stroke='url(#psi-g1)' stroke-width='4' stroke-linecap='round'/>
+      <!-- convergence glow at top -->
+      <circle cx='50' cy='24' r='4' fill='#3b82f6' opacity='0.3'>
+        <animate attributeName='r' values='3;5;3' dur='2s' repeatCount='indefinite'/>
+        <animate attributeName='opacity' values='0.3;0.6;0.3' dur='2s' repeatCount='indefinite'/></circle>
+      <!-- base pedestal -->
+      <ellipse cx='50' cy='90' rx='10' ry='3' fill='url(#psi-g1)' opacity='0.4'/>
     </svg>";
 
-    // Favicon as data URI
-    private const string FaviconLink = @"<link rel='icon' type='image/svg+xml' href=""data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%233b82f6'/%3E%3Cstop offset='100%25' stop-color='%2393c5fd'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M35 30 Q35 50, 50 55 M65 30 Q65 50, 50 55 M50 55 L50 85' stroke='url(%23g1)' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='50' cy='28' r='3' fill='%233b82f6'/%3E%3Cellipse cx='50' cy='87' rx='8' ry='3' fill='%233b82f6' opacity='0.5'/%3E%3C/svg%3E"">";
+    // Favicon — static Ψ (no animations for favicon)
+    private const string FaviconLink = @"<link rel='icon' type='image/svg+xml' href=""data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='fg' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%233b82f6'/%3E%3Cstop offset='100%25' stop-color='%2393c5fd'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M32 28 C32 42 38 52 50 58' stroke='url(%23fg)' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3Cpath d='M68 28 C68 42 62 52 50 58' stroke='url(%23fg)' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3Cline x1='50' y1='58' x2='50' y2='88' stroke='url(%23fg)' stroke-width='5' stroke-linecap='round'/%3E%3Ccircle cx='50' cy='24' r='4' fill='%233b82f6' opacity='0.5'/%3E%3Cellipse cx='50' cy='90' rx='10' ry='3' fill='%233b82f6' opacity='0.4'/%3E%3C/svg%3E"">";
 
     // Live sessions keyed by session ID (shared across users)
     private static readonly ConcurrentDictionary<string, LiveSession> _liveSessions = new();
