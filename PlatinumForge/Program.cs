@@ -2169,6 +2169,7 @@ public static class PlatinumForgeServer
                 var reqBody = await ReadBody(ctx.Request);
                 var doc = JsonDocument.Parse(reqBody);
                 var message = doc.RootElement.GetProperty("message").GetString() ?? "";
+                var agentName = doc.RootElement.TryGetProperty("agent", out var ag) ? ag.GetString() ?? "psi" : "psi";
                 live.AddChat("user", message);
                 _ = live.BroadcastAll("chat", new { role = "user", message });
                 _ = Task.Run(async () =>
@@ -2187,26 +2188,9 @@ public static class PlatinumForgeServer
                             architectureTweaks = live.State.ArchitectureTweaks,
                         });
                         var chatHistory = string.Join("\n", live.ChatLog.TakeLast(20).Select(c => $"[{c.Role}] {c.Message}"));
+                        var agentSystemPrompt = GetAgentSystemPrompt(agentName);
                         var response = await OpenAIClient.Complete(
-                            """
-                            You are a collaborative design agent for PlatinumForge, an autonomous software generation platform.
-                            You help users refine their project specification across these layers:
-                            description, personas, rules, invariants, architecture, dataflow, frameworks, language,
-                            deployment, features, stories, nfr, codeTweaks, testTweaks, iac, deployTweaks, architectureTweaks.
-
-                            When you want to suggest a change, include a JSON block in your response wrapped in ```actions ... ```.
-                            The JSON is an array of action objects:
-                            [
-                              {"label": "human-readable description", "layer": "rules", "op": "set", "key": "no-nulls", "value": "Public methods must never return null"},
-                              {"label": "Remove old rule", "layer": "rules", "op": "remove", "key": "outdated-rule", "value": ""},
-                              {"label": "Set architecture note", "layer": "architectureTweaks", "op": "set-string", "key": "", "value": "Use vertical slice architecture"}
-                            ]
-                            ops: "set" = add/update a key-value pair, "remove" = delete a key, "set-string" = set a string-valued layer (architectureTweaks).
-
-                            Your conversational text goes OUTSIDE the actions block. Be helpful, concise, and opinionated.
-                            If the user is just chatting or asking questions, respond without actions.
-                            Always explain WHY you suggest each change.
-                            """,
+                            agentSystemPrompt,
                             $"""
                             Current project state:
                             {stateJson}
@@ -2244,11 +2228,11 @@ public static class PlatinumForgeServer
                             catch { /* actions parse failed, just show text */ }
                         }
 
-                        var entry = new ChatEntry { Role = "agent", Message = conversational.Trim(), Actions = actions };
+                        var entry = new ChatEntry { Role = agentName, Message = conversational.Trim(), Actions = actions };
                         live.ChatLog.Add(entry);
                         _ = live.BroadcastAll("chat", new
                         {
-                            role = "agent",
+                            role = agentName,
                             message = entry.Message,
                             actions = actions?.Select(a => new { a.Id, a.Label, a.Layer, a.Op, a.Key, a.Value, a.Applied }),
                         });
@@ -2379,14 +2363,12 @@ public static class PlatinumForgeServer
                 {
                     var enriched = await OpenAIClient.Complete(
                         """
-                        You are a product design enrichment assistant for PlatinumForge by WaveFunctionLabs.
-                        Your job is to take rough, half-formed ideas and sharpen them into clear, actionable specifications.
-
-                        Rules:
-                        - Expand vague ideas into specific, concrete items
+                        You are 🏠 Hestia, the Explorer — an enrichment agent for PlatinumForge by WaveFunctionLabs.
+                        Your role is to explore and enrich concepts in depth. You:
+                        - Take rough, half-formed ideas and deepen them with rich detail
                         - Split compound ideas into separate well-defined entries
-                        - Add missing considerations the user likely hasn't thought of
-                        - Improve wording to be precise and unambiguous
+                        - Add missing considerations, edge cases, and supporting concepts
+                        - Improve wording to be precise, clear, and unambiguous
                         - Preserve the user's intent — enhance, don't replace
                         - Keep each value concise (1-3 sentences max)
                         - Output ONLY valid JSON, no markdown fences, no explanation
@@ -2597,17 +2579,52 @@ public static class PlatinumForgeServer
                 // File manifest (planning)
                 if (live.State.FileManifest.Count > 0) tree["📋 Manifest"] = live.State.FileManifest.Keys.ToList();
                 
-                // Group generated files by folder prefix or category
-                void AddFiles(string category, Dictionary<string, string> dict) {
-                    if (dict.Count > 0) tree[category] = dict.Keys.ToList();
+                // Interfaces
+                if (live.State.Interfaces.Count > 0) tree["🔌 Interfaces"] = live.State.Interfaces.Keys.ToList();
+                
+                // Code — sub-group by path prefix or inferred category
+                if (live.State.Code.Count > 0)
+                {
+                    var grouped = new Dictionary<string, List<string>>();
+                    foreach (var key in live.State.Code.Keys)
+                    {
+                        var parts = key.Replace('\\', '/').Split('/');
+                        string folder;
+                        if (parts.Length > 1)
+                            folder = "💻 " + parts[0];
+                        else if (key.Equals("Program.cs", StringComparison.OrdinalIgnoreCase))
+                            folder = "🚀 Startup";
+                        else if (key.Contains("Extension", StringComparison.OrdinalIgnoreCase))
+                            folder = "🔧 Extensions";
+                        else if (key.Contains("Enum", StringComparison.OrdinalIgnoreCase))
+                            folder = "📑 Enums";
+                        else if (key.Contains("Model", StringComparison.OrdinalIgnoreCase) || key.Contains("Dto", StringComparison.OrdinalIgnoreCase))
+                            folder = "📦 Models";
+                        else if (key.Contains("Controller", StringComparison.OrdinalIgnoreCase))
+                            folder = "🌐 Controllers";
+                        else if (key.Contains("Middleware", StringComparison.OrdinalIgnoreCase))
+                            folder = "🔗 Middleware";
+                        else if (key.Contains("Static", StringComparison.OrdinalIgnoreCase) || key.Contains("Helper", StringComparison.OrdinalIgnoreCase))
+                            folder = "⚡ Statics";
+                        else
+                            folder = "💻 Services";
+                        
+                        if (!grouped.ContainsKey(folder)) grouped[folder] = new();
+                        grouped[folder].Add(key);
+                    }
+                    foreach (var (folder, files) in grouped.OrderBy(g => g.Key))
+                        tree[folder] = files;
                 }
-                AddFiles("Interfaces", live.State.Interfaces);
-                AddFiles("UnitTests", live.State.UnitTests);
-                AddFiles("Code", live.State.Code);
-                AddFiles("NfrTests", live.State.NfrTests);
-                AddFiles("SoakTests", live.State.SoakTests);
-                AddFiles("IntegrationTests", live.State.IntegrationTests);
-                AddFiles("IaC", live.State.IaC);
+                
+                // Tests
+                if (live.State.UnitTests.Count > 0) tree["🧪 Unit Tests"] = live.State.UnitTests.Keys.ToList();
+                if (live.State.NfrTests.Count > 0) tree["🎭 NFR Tests"] = live.State.NfrTests.Keys.ToList();
+                if (live.State.SoakTests.Count > 0) tree["🌊 Soak Tests"] = live.State.SoakTests.Keys.ToList();
+                if (live.State.IntegrationTests.Count > 0) tree["🔗 Integration Tests"] = live.State.IntegrationTests.Keys.ToList();
+                
+                // Infrastructure
+                if (live.State.IaC.Count > 0) tree["☁️ Infrastructure"] = live.State.IaC.Keys.ToList();
+                
                 body = JsonSerializer.Serialize(tree);
             }
             else if (path == "/api/store/file" && method == "GET")
@@ -2955,6 +2972,102 @@ public static class PlatinumForgeServer
         foreach (var prop in el.EnumerateObject())
             target[prop.Name] = prop.Value.GetString() ?? "";
     }
+
+    private const string AgentActionsPrompt =
+        """
+        When you want to suggest a change to the project specification, include a JSON block in your response wrapped in ```actions ... ```.
+        The JSON is an array of action objects:
+        [
+          {"label": "human-readable description", "layer": "rules", "op": "set", "key": "no-nulls", "value": "Public methods must never return null"},
+          {"label": "Remove old rule", "layer": "rules", "op": "remove", "key": "outdated-rule", "value": ""},
+          {"label": "Set architecture note", "layer": "architectureTweaks", "op": "set-string", "key": "", "value": "Use vertical slice architecture"}
+        ]
+        ops: "set" = add/update a key-value pair, "remove" = delete a key, "set-string" = set a string-valued layer (architectureTweaks).
+        Layers: description, personas, rules, invariants, architecture, dataflow, frameworks, language,
+        deployment, features, stories, nfr, codeTweaks, testTweaks, iac, deployTweaks, architectureTweaks.
+        Your conversational text goes OUTSIDE the actions block. Always explain WHY you suggest each change.
+        """;
+
+    private static string GetAgentSystemPrompt(string agent) => agent switch
+    {
+        "apollo" =>
+            $"""
+            You are ☀️ Apollo, the Expander — a visionary design agent for PlatinumForge by WaveFunctionLabs.
+            Your role is to EXPAND the wavefunction of possibility. When a user shares an idea, you:
+            - Explore wild, creative, ambitious extensions of the idea
+            - Suggest features, patterns, and possibilities the user hasn't considered
+            - Think laterally — connect disparate domains, draw analogies, propose novel approaches
+            - Propose multiple divergent directions rather than converging on one
+            - Be enthusiastic and inspiring — you are the voice of "what if?"
+            - Never dismiss ideas as too ambitious; instead, show how to get there incrementally
+            Be concise but exciting. Suggest concrete additions via actions.
+            {AgentActionsPrompt}
+            """,
+        "prometheus" =>
+            $"""
+            You are 🔥 Prometheus, the Challenger — a critical design agent for PlatinumForge by WaveFunctionLabs.
+            Your role is to QUESTION and CHALLENGE requirements and constraints. You:
+            - Probe assumptions — ask "why?" and "what if that's wrong?"
+            - Identify contradictions, ambiguities, and gaps in the specification
+            - Challenge over-engineering and unnecessary complexity
+            - Question whether constraints are too tight or too loose
+            - Push back on vague requirements — demand specificity
+            - Play devil's advocate constructively — you strengthen ideas by stress-testing them
+            - Point out edge cases, failure modes, and things that could go wrong
+            Be direct and incisive. Ask tough questions. When suggesting changes, explain the risk you're mitigating.
+            {AgentActionsPrompt}
+            """,
+        "hephaestus" =>
+            $"""
+            You are ⚒️ Hephaestus, the Builder — a practical engineering agent for PlatinumForge by WaveFunctionLabs.
+            Your role is to BUILD and FORGE code structure. You:
+            - Focus on implementation details, patterns, and architecture decisions
+            - Suggest concrete data structures, class hierarchies, and API designs
+            - Think about performance, scalability, and maintainability
+            - Propose specific frameworks, libraries, and tools that fit the requirements
+            - Break down large features into implementable components
+            - Suggest realistic project structure (files, folders, namespaces)
+            - Think about DI, middleware, pipelines, and integration patterns
+            Be practical and precise. Your suggestions should be immediately actionable in code.
+            {AgentActionsPrompt}
+            """,
+        "themis" =>
+            $"""
+            You are ⚖️ Themis, the Enforcer — a governance agent for PlatinumForge by WaveFunctionLabs.
+            Your role is to ENFORCE rules and maintain consistency. You:
+            - Check whether proposed changes comply with existing rules and invariants
+            - Block or flag changes that contradict upstream constraints
+            - Verify that features align with the stated architecture and NFRs
+            - Ensure security, compliance, and quality standards are maintained
+            - When something doesn't fit the rules, suggest the rules should change (via Apollo)
+            - Cross-reference different layers for consistency (e.g., features vs stories, architecture vs deployment)
+            - Identify violations of SOLID principles, security best practices, or stated invariants
+            Be firm but fair. When blocking, always explain which rule is violated and suggest a path forward.
+            {AgentActionsPrompt}
+            """,
+        "hestia" =>
+            $"""
+            You are 🏠 Hestia, the Explorer — an enrichment agent for PlatinumForge by WaveFunctionLabs.
+            Your role is to EXPLORE and ENRICH concepts in depth. You:
+            - Take rough, half-formed ideas and deepen them with rich detail
+            - Research-style expansion: add context, nuance, and depth to existing entries
+            - Split compound ideas into well-defined separate entries
+            - Add missing considerations, edge cases, and supporting concepts
+            - Improve wording to be precise, clear, and unambiguous
+            - Suggest taxonomies, categorisations, and hierarchies for complex domains
+            - Fill gaps — if features exist without stories, write the stories; if rules exist without invariants, add them
+            - Preserve the user's intent while enhancing quality and completeness
+            Be thorough and scholarly. Your enrichments should make vague specs production-ready.
+            {AgentActionsPrompt}
+            """,
+        _ => // psi (default)
+            $"""
+            You are Ψ Psi, the general design agent for PlatinumForge by WaveFunctionLabs.
+            You help users refine their project specification. Be helpful, concise, and opinionated.
+            If the user is just chatting or asking questions, respond without actions.
+            {AgentActionsPrompt}
+            """
+    };
 
     private static async Task<bool> RunRetryLoop(LiveSession live)
     {
@@ -3545,12 +3658,21 @@ public static class PlatinumForgeServer
                 .chat-entry.error { background: rgba(248,81,73,0.1); color: var(--red); border-left: 3px solid var(--red); }
                 .chat-entry.success { background: rgba(63,185,80,0.1); color: var(--green); border-left: 3px solid var(--green); }
                 .chat-entry.agent { background: rgba(188,140,255,0.1); border-left: 3px solid var(--purple); }
+                .chat-entry.apollo { background: rgba(255,200,50,0.1); border-left: 3px solid #f5c542; }
+                .chat-entry.prometheus { background: rgba(255,100,50,0.1); border-left: 3px solid #ff6432; }
+                .chat-entry.hephaestus { background: rgba(150,120,90,0.1); border-left: 3px solid #b8860b; }
+                .chat-entry.themis { background: rgba(100,200,150,0.1); border-left: 3px solid #3ecf8e; }
+                .chat-entry.hestia { background: rgba(255,160,200,0.1); border-left: 3px solid #f0a0c8; }
                 .chat-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
                 .chat-action-btn { background: var(--surface2); border: 1px solid var(--purple); color: var(--purple); padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 4px; }
                 .chat-action-btn:hover { background: var(--purple); color: #fff; }
                 .chat-action-btn.applied { background: var(--green); border-color: var(--green); color: #000; cursor: default; opacity: 0.7; }
                 .chat-action-btn .action-layer { font-size: 9px; opacity: 0.7; text-transform: uppercase; }
                 .chat-time { font-size: 10px; color: var(--text-dim); margin-bottom: 2px; }
+                .agent-tabs { display: flex; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--border); background: var(--surface2); overflow-x: auto; }
+                .agent-tab { background: none; border: 1px solid transparent; color: var(--text-dim); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+                .agent-tab:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+                .agent-tab.active { border-color: var(--agent-color, var(--purple)); color: var(--agent-color, var(--purple)); background: rgba(255,255,255,0.05); font-weight: 600; }
 
                 /* History Panel */
                 #history-panel { flex: 0 0 auto; max-height: 25%; border-top: 1px solid var(--border); overflow-y: auto; }
@@ -3709,8 +3831,16 @@ public static class PlatinumForgeServer
                 <!-- Chat Panel (Psi Agent) -->
                 <div id="chat-panel">
                     <div class="chat-panel-header">
-                        <span>Ψ Psi</span>
-                        <span style="font-size:10px;color:var(--text-dim);font-weight:400;">AI Design Agent</span>
+                        <span>Ψ Agents</span>
+                        <span style="font-size:10px;color:var(--text-dim);font-weight:400;">Design Council</span>
+                    </div>
+                    <div class="agent-tabs">
+                        <button class="agent-tab active" style="--agent-color:#bc8cff;" onclick="selectAgent('psi', this)">Ψ Psi</button>
+                        <button class="agent-tab" style="--agent-color:#f5c542;" onclick="selectAgent('apollo', this)">☀️ Apollo</button>
+                        <button class="agent-tab" style="--agent-color:#ff6432;" onclick="selectAgent('prometheus', this)">🔥 Prometheus</button>
+                        <button class="agent-tab" style="--agent-color:#b8860b;" onclick="selectAgent('hephaestus', this)">⚒️ Hephaestus</button>
+                        <button class="agent-tab" style="--agent-color:#3ecf8e;" onclick="selectAgent('themis', this)">⚖️ Themis</button>
+                        <button class="agent-tab" style="--agent-color:#f0a0c8;" onclick="selectAgent('hestia', this)">🏠 Hestia</button>
                     </div>
                     <div id="chat"></div>
                     <div id="prompt-area">
@@ -4006,9 +4136,14 @@ public static class PlatinumForgeServer
                     const el = document.getElementById('chat');
                     const t = new Date().toLocaleTimeString();
                     const div = document.createElement('div');
-                    div.className = `chat-entry ${role}`;
-                    const label = role === 'agent' ? '<div style="font-size:10px;font-weight:700;color:var(--purple);margin-bottom:2px;">Ψ Psi</div>' :
-                                  role === 'user' ? '<div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:2px;">You</div>' : '';
+                    const agentInfo = AGENT_META[role];
+                    div.className = `chat-entry ${agentInfo ? role : role}`;
+                    let label = '';
+                    if (role === 'user') {
+                        label = '<div style="font-size:10px;font-weight:700;color:var(--accent);margin-bottom:2px;">You</div>';
+                    } else if (agentInfo) {
+                        label = `<div style="font-size:10px;font-weight:700;color:${agentInfo.color};margin-bottom:2px;">${agentInfo.icon} ${agentInfo.name}</div>`;
+                    }
                     div.innerHTML = `<div class="chat-time">${t}</div>${label}${escHtml(message)}${actionsHtml}`;
                     el.appendChild(div);
                     el.scrollTop = el.scrollHeight;
@@ -4409,7 +4544,7 @@ public static class PlatinumForgeServer
                                     </div>
                                     <div class="constraint-actions">
                                         <button class="btn-sm save" onclick="saveStringLayer('${layer}')">💾 Save</button>
-                                        <button class="btn-sm" onclick="enrichLayer('${layer}', true)" style="color:#a78bfa;">✨ Enrich</button>
+                                        <button class="btn-sm" onclick="enrichLayer('${layer}', true)" style="color:#f0a0c8;">🏠 Hestia</button>
                                         <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
                                     </div>
                                 </div>
@@ -4433,7 +4568,7 @@ public static class PlatinumForgeServer
                                 <div class="constraint-actions" style="position:relative;">
                                     <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
                                     <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
-                                    <button class="btn-sm" onclick="enrichLayer('${layer}')" style="color:#a78bfa;">✨ Enrich</button>
+                                    <button class="btn-sm" onclick="enrichLayer('${layer}')" style="color:#f0a0c8;">🏠 Hestia</button>
                                     <button class="btn-sm" onclick="dedupeLayer('${layer}')" style="color:#58a6ff;">🧹 Dedupe</button>
                                     <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
                                     ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
@@ -4501,7 +4636,7 @@ public static class PlatinumForgeServer
                         const newBody = document.getElementById('body-' + layer);
                         if (newBody) newBody.classList.add('open');
 
-                        appendChatEntry('system', `✨ Enriched ${layer}: ${Object.keys(parsed).length} items`);
+                        appendChatEntry('hestia', `Enriched ${layer}: ${Object.keys(parsed).length} items explored and refined`);
                     } catch (ex) {
                         appendChatEntry('error', `Enrich failed: ${ex.message}`);
                     } finally {
@@ -4672,6 +4807,24 @@ public static class PlatinumForgeServer
                     setTimeout(refreshAll, 500);
                 }
 
+                let activeAgent = 'psi';
+                const AGENT_META = {
+                    psi:        { icon: 'Ψ',  name: 'Psi',        color: '#bc8cff' },
+                    apollo:     { icon: '☀️', name: 'Apollo',     color: '#f5c542' },
+                    prometheus: { icon: '🔥', name: 'Prometheus', color: '#ff6432' },
+                    hephaestus: { icon: '⚒️', name: 'Hephaestus', color: '#b8860b' },
+                    themis:     { icon: '⚖️', name: 'Themis',     color: '#3ecf8e' },
+                    hestia:     { icon: '🏠', name: 'Hestia',     color: '#f0a0c8' },
+                };
+
+                function selectAgent(agent, btn) {
+                    activeAgent = agent;
+                    document.querySelectorAll('.agent-tab').forEach(t => t.classList.remove('active'));
+                    if (btn) btn.classList.add('active');
+                    document.getElementById('prompt-input').placeholder = `Ask ${AGENT_META[agent]?.name || agent}...`;
+                    document.getElementById('prompt-input').focus();
+                }
+
                 async function sendChat() {
                     const input = document.getElementById('prompt-input');
                     const message = input.value.trim();
@@ -4682,18 +4835,8 @@ public static class PlatinumForgeServer
                         const r = await apiFetch('/api/chat/send', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ message })
+                            body: JSON.stringify({ message, agent: activeAgent })
                         });
-                        const d = await r.json();
-                        if (d.reply) {
-                            let actionsHtml = '';
-                            if (d.actions && d.actions.length > 0) {
-                                actionsHtml = `<div class="chat-actions">${d.actions.map(a =>
-                                    `<button class="chat-action-btn" data-action-id="${a.Id}" onclick="applyAction('${a.Id}')">▶ ${escHtml(a.Label)} <span class="action-layer">${a.Layer}</span></button>`
-                                ).join('')}</div>`;
-                            }
-                            appendChatEntry('agent', d.reply, actionsHtml);
-                        }
                     } catch (ex) {
                         appendChatEntry('error', 'Chat failed: ' + ex.message);
                     }
@@ -4814,21 +4957,28 @@ public static class PlatinumForgeServer
                         const r = await fetch('/api/store/tree');
                         const tree = await r.json();
                         const el = document.getElementById('tree-content');
-                        const LAYER_ICONS = {
-                            Rules: '📜', Architecture: '🏗', NFR: '⚡', Invariants: '🔒',
-                            Features: '✨', UnitTests: '🧪', Interfaces: '🔌', Code: '💻',
-                            NfrTests: '🎭', SoakTests: '🌊', IntegrationTests: '🔗'
+                        // Map display folder names to backend layer names
+                        const LAYER_MAP = {
+                            '📋 Manifest': 'filemanifest',
+                            '🔌 Interfaces': 'interfaces',
+                            '🧪 Unit Tests': 'unittests',
+                            '🎭 NFR Tests': 'nfrtests',
+                            '🌊 Soak Tests': 'soaktests',
+                            '🔗 Integration Tests': 'integrationtests',
+                            '☁️ Infrastructure': 'iac',
                         };
-                        el.innerHTML = Object.entries(tree).map(([layer, files]) => {
-                            const icon = LAYER_ICONS[layer] || '📁';
+                        // Code sub-groups all map to 'code' layer
+                        const CODE_FOLDERS = ['💻 Services','🚀 Startup','🔧 Extensions','📑 Enums','📦 Models','🌐 Controllers','🔗 Middleware','⚡ Statics'];
+                        el.innerHTML = Object.entries(tree).map(([folder, files]) => {
+                            const backendLayer = LAYER_MAP[folder] || (CODE_FOLDERS.some(f => folder.startsWith(f.substring(0,2))) ? 'code' : 'code');
                             const hasFiles = files.length > 0;
                             return `<div class="tree-folder">
                                 <div class="tree-folder-label${hasFiles ? '' : ' empty'}" onclick="toggleTreeFolder(this)">
-                                    <span class="folder-icon">▶</span>${icon} ${layer}
+                                    <span class="folder-icon">▶</span>${folder}
                                     <span class="tree-file-count">${files.length}</span>
                                 </div>
                                 <div class="tree-folder-children">
-                                    ${files.map(f => `<div class="tree-file${activeFile && activeFile.layer === layer && activeFile.key === f ? ' active' : ''}" onclick="viewStoreFile('${escAttr(layer)}','${escAttr(f)}')">📄 ${escHtml(f)}</div>`).join('')}
+                                    ${files.map(f => `<div class="tree-file${activeFile && activeFile.layer === backendLayer && activeFile.key === f ? ' active' : ''}" onclick="viewStoreFile('${escAttr(backendLayer)}','${escAttr(f)}')">📄 ${escHtml(f)}</div>`).join('')}
                                 </div>
                             </div>`;
                         }).join('');
