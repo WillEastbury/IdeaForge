@@ -1349,6 +1349,32 @@ public static class PlatinumForgeServer
 {
     private static HttpListener? _listener;
 
+    // Ψ logo SVG — ideas converging on a psi/tuning fork with swirling waves
+    private const string PsiLogoSvg = @"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+      <defs>
+        <linearGradient id='g1' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#3b82f6'/><stop offset='100%' stop-color='#93c5fd'/></linearGradient>
+        <linearGradient id='g2' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#60a5fa' stop-opacity='0.6'/><stop offset='100%' stop-color='#3b82f6' stop-opacity='0.2'/></linearGradient>
+      </defs>
+      <!-- swirling wave arcs converging -->
+      <path d='M15 28 Q30 10, 50 22' stroke='url(#g2)' stroke-width='2.5' fill='none' opacity='0.7'><animate attributeName='d' values='M15 28 Q30 10, 50 22;M15 24 Q30 14, 50 22;M15 28 Q30 10, 50 22' dur='3s' repeatCount='indefinite'/></path>
+      <path d='M85 28 Q70 10, 50 22' stroke='url(#g2)' stroke-width='2.5' fill='none' opacity='0.7'><animate attributeName='d' values='M85 28 Q70 10, 50 22;M85 24 Q70 14, 50 22;M85 28 Q70 10, 50 22' dur='3s' repeatCount='indefinite'/></path>
+      <path d='M22 18 Q36 4, 50 16' stroke='url(#g2)' stroke-width='1.8' fill='none' opacity='0.5'><animate attributeName='d' values='M22 18 Q36 4, 50 16;M22 14 Q36 8, 50 16;M22 18 Q36 4, 50 16' dur='2.5s' repeatCount='indefinite'/></path>
+      <path d='M78 18 Q64 4, 50 16' stroke='url(#g2)' stroke-width='1.8' fill='none' opacity='0.5'><animate attributeName='d' values='M78 18 Q64 4, 50 16;M78 14 Q64 8, 50 16;M78 18 Q64 4, 50 16' dur='2.5s' repeatCount='indefinite'/></path>
+      <!-- idea dots converging -->
+      <circle r='2.5' fill='#93c5fd' opacity='0.8'><animateMotion dur='2s' repeatCount='indefinite' path='M20 30 Q35 15, 50 28'/></circle>
+      <circle r='2.5' fill='#93c5fd' opacity='0.8'><animateMotion dur='2s' repeatCount='indefinite' path='M80 30 Q65 15, 50 28'/></circle>
+      <circle r='2' fill='#60a5fa' opacity='0.6'><animateMotion dur='2.8s' repeatCount='indefinite' path='M28 22 Q40 8, 50 24'/></circle>
+      <circle r='2' fill='#60a5fa' opacity='0.6'><animateMotion dur='2.8s' repeatCount='indefinite' path='M72 22 Q60 8, 50 24'/></circle>
+      <!-- Ψ psi/tuning fork -->
+      <path d='M35 30 Q35 50, 50 55 M65 30 Q65 50, 50 55 M50 55 L50 85' stroke='url(#g1)' stroke-width='4' fill='none' stroke-linecap='round' stroke-linejoin='round'/>
+      <circle cx='50' cy='28' r='3' fill='url(#g1)' opacity='0.9'/>
+      <!-- base -->
+      <ellipse cx='50' cy='87' rx='8' ry='3' fill='url(#g1)' opacity='0.5'/>
+    </svg>";
+
+    // Favicon as data URI
+    private const string FaviconLink = @"<link rel='icon' type='image/svg+xml' href=""data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g1' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%233b82f6'/%3E%3Cstop offset='100%25' stop-color='%2393c5fd'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath d='M35 30 Q35 50, 50 55 M65 30 Q65 50, 50 55 M50 55 L50 85' stroke='url(%23g1)' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='50' cy='28' r='3' fill='%233b82f6'/%3E%3Cellipse cx='50' cy='87' rx='8' ry='3' fill='%233b82f6' opacity='0.5'/%3E%3C/svg%3E"">";
+
     // Live sessions keyed by session ID (shared across users)
     private static readonly ConcurrentDictionary<string, LiveSession> _liveSessions = new();
 
@@ -1631,7 +1657,7 @@ public static class PlatinumForgeServer
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://+:{port}/");
         _listener.Start();
-        Console.WriteLine($"  → PlatinumForge UI at http://localhost:{port} (all interfaces)");
+        Console.WriteLine($"  → WaveFunctionLabs / PlatinumForge UI at http://localhost:{port} (all interfaces)");
         Console.WriteLine($"  → Data directory: {AuthManager.DataRoot}");
         if (AuthManager.IsConfigured)
         {
@@ -2983,13 +3009,15 @@ public static class PlatinumForgeServer
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>PlatinumForge — Sign In</title>
+            <title>WaveFunctionLabs — Sign In</title>
+            " + FaviconLink + @"
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; }
                 .login-card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 48px 40px; text-align: center; max-width: 420px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
-                .logo-icon { font-size: 64px; margin-bottom: 16px; filter: drop-shadow(0 0 12px rgba(249,115,22,0.6)); }
-                .logo-text { font-size: 32px; font-weight: 700; background: linear-gradient(135deg, #f97316, #fb923c, #fbbf24); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
+                .logo-icon { font-size: 64px; margin-bottom: 16px; filter: drop-shadow(0 0 12px rgba(59,130,246,0.6)); }
+                .logo-icon svg { width: 72px; height: 72px; }
+                .logo-text { font-size: 32px; font-weight: 700; background: linear-gradient(135deg, #3b82f6, #60a5fa, #93c5fd); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }
                 .logo-sub { font-size: 13px; color: #8b949e; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 32px; }
                 .login-buttons { display: flex; flex-direction: column; gap: 12px; align-items: center; }
                 .login-btn { display: inline-flex; align-items: center; gap: 12px; background: #fff; color: #333; border: none; padding: 12px 32px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; text-decoration: none; width: 100%; justify-content: center; }
@@ -3000,9 +3028,9 @@ public static class PlatinumForgeServer
         </head>
         <body>
             <div class="login-card">
-                <div class="logo-icon">🔥</div>
-                <div class="logo-text">PlatinumForge</div>
-                <div class="logo-sub">What if software built itself?</div>
+                <div class="logo-icon">" + PsiLogoSvg + @"</div>
+                <div class="logo-text">WaveFunctionLabs</div>
+                <div class="logo-sub">PlatinumForge · What if software built itself?</div>
                 <div class="login-buttons">
                     {{buttons}}
                 </div>
@@ -3020,13 +3048,14 @@ public static class PlatinumForgeServer
         <head>
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
-            <title>PlatinumForge — PlatinumForge</title>
+            <title>WaveFunctionLabs — PlatinumForge</title>
+            " + FaviconLink + @"
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 :root {
                     --bg: #0d1117; --surface: #161b22; --surface2: #1c2333;
                     --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e;
-                    --accent: #f97316; --accent2: #fb923c; --green: #3fb950;
+                    --accent: #3b82f6; --accent2: #60a5fa; --green: #3fb950;
                     --red: #f85149; --blue: #58a6ff; --purple: #bc8cff;
                 }
                 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -3034,8 +3063,9 @@ public static class PlatinumForgeServer
                 /* Logo/Header */
                 #header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 12px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 2px solid var(--accent); flex-shrink: 0; }
                 .logo { display: flex; align-items: center; gap: 12px; }
-                .logo-icon { font-size: 32px; filter: drop-shadow(0 0 8px rgba(249,115,22,0.6)); }
-                .logo-text { font-size: 22px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent2), #fbbf24); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -0.5px; }
+                .logo-icon { font-size: 32px; filter: drop-shadow(0 0 8px rgba(59,130,246,0.6)); }
+                .logo-icon svg { width: 36px; height: 36px; }
+                .logo-text { font-size: 22px; font-weight: 700; background: linear-gradient(135deg, var(--accent), var(--accent2), #93c5fd); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -0.5px; }
                 .logo-sub { font-size: 11px; color: var(--text-dim); letter-spacing: 2px; text-transform: uppercase; }
                 .header-status { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); }
                 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
@@ -3048,7 +3078,7 @@ public static class PlatinumForgeServer
                 .pipeline-arrow:first-child { clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 50%, calc(100% - 16px) 100%, 0 100%); margin-left: 0; padding-left: 16px; }
                 .pipeline-arrow:last-child { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 16px 50%); }
                 .pipeline-arrow:hover { background: #252d3a; color: var(--text); }
-                .pipeline-arrow.active { background: linear-gradient(135deg, #1e2a4a, #1a3560); color: var(--accent); text-shadow: 0 0 8px rgba(249,115,22,0.3); }
+                .pipeline-arrow.active { background: linear-gradient(135deg, #1e2a4a, #1a3560); color: var(--accent); text-shadow: 0 0 8px rgba(59,130,246,0.3); }
                 .pipeline-arrow.completed { background: linear-gradient(135deg, #0d2818, #132f1e); color: var(--green); }
                 .pipeline-arrow .arrow-icon { font-size: 14px; }
                 .pipeline-arrow .arrow-badge { background: var(--accent); color: #000; font-size: 9px; padding: 1px 5px; border-radius: 6px; font-weight: 700; min-width: 16px; text-align: center; }
@@ -3096,7 +3126,7 @@ public static class PlatinumForgeServer
                 /* Prompt */
                 #prompt-area { padding: 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
                 #prompt-input { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 12px; border-radius: 6px; font-size: 14px; font-family: inherit; resize: none; outline: none; }
-                #prompt-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(249,115,22,0.2); }
+                #prompt-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,0.2); }
                 #prompt-actions { display: flex; gap: 8px; margin-top: 8px; }
                 .btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
                 .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #000; }
@@ -3108,7 +3138,7 @@ public static class PlatinumForgeServer
                 /* Chat */
                 #chat { flex: 1; overflow-y: auto; padding: 8px; }
                 .chat-entry { padding: 6px 10px; margin-bottom: 4px; border-radius: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-                .chat-entry.user { background: rgba(249,115,22,0.1); border-left: 3px solid var(--accent); }
+                .chat-entry.user { background: rgba(59,130,246,0.1); border-left: 3px solid var(--accent); }
                 .chat-entry.system { background: rgba(88,166,255,0.06); color: var(--text-dim); }
                 .chat-entry.error { background: rgba(248,81,73,0.1); color: var(--red); border-left: 3px solid var(--red); }
                 .chat-entry.success { background: rgba(63,185,80,0.1); color: var(--green); border-left: 3px solid var(--green); }
@@ -3143,7 +3173,7 @@ public static class PlatinumForgeServer
                 /* Editor tabs */
                 .tab { background: var(--surface2); padding: 4px 12px; border-radius: 4px; font-size: 12px; color: var(--text-dim); border: 1px solid var(--border); cursor: pointer; transition: all 0.15s; }
                 .tab:hover { color: var(--text); border-color: var(--accent); }
-                .tab.active { color: var(--accent); border-color: var(--accent); background: rgba(249,115,22,0.1); }
+                .tab.active { color: var(--accent); border-color: var(--accent); background: rgba(59,130,246,0.1); }
 
                 /* File tree */
                 #file-tree { width: 240px; min-width: 200px; background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; }
@@ -3157,7 +3187,7 @@ public static class PlatinumForgeServer
                 .tree-folder-children.open { display: block; }
                 .tree-file { display: flex; align-items: center; gap: 6px; padding: 5px 12px 5px 28px; font-size: 12px; color: var(--text); cursor: pointer; border-left: 2px solid transparent; }
                 .tree-file:hover { background: var(--surface2); color: var(--accent); }
-                .tree-file.active { background: rgba(249,115,22,0.08); border-left-color: var(--accent); color: var(--accent); }
+                .tree-file.active { background: rgba(59,130,246,0.08); border-left-color: var(--accent); color: var(--accent); }
                 .tree-file-count { font-size: 10px; color: var(--text-dim); background: var(--surface2); padding: 0 6px; border-radius: 8px; margin-left: auto; }
 
                 /* Session button */
@@ -3209,10 +3239,10 @@ public static class PlatinumForgeServer
         <body>
             <div id="header">
                 <div class="logo">
-                    <span class="logo-icon">🔥</span>
+                    <span class="logo-icon">" + PsiLogoSvg + @"</span>
                     <div>
-                        <div class="logo-text">PlatinumForge</div>
-                        <div class="logo-sub">What if software built itself?</div>
+                        <div class="logo-text">WaveFunctionLabs</div>
+                        <div class="logo-sub">PlatinumForge · What if software built itself?</div>
                     </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px; margin-left:16px;">
@@ -3243,7 +3273,7 @@ public static class PlatinumForgeServer
                         <textarea id="prompt-input" rows="3" placeholder="Chat with the agent about your design, or describe what to build..."></textarea>
                         <div id="prompt-actions">
                             <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">💬 Chat</button>
-                            <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">🔥 Generate</button>
+                            <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">Ψ Generate</button>
                             <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
                         </div>
                     </div>
@@ -3258,7 +3288,7 @@ public static class PlatinumForgeServer
                         <span class="tab active" id="tabGenerated" onclick="showEditorTab('generated')">📄 Code</span>
                         <span class="tab" id="tabUnitTests" onclick="showEditorTab('unitTests')">🧪 Unit</span>
                         <span class="tab" id="tabNfrTests" onclick="showEditorTab('nfrTests')">🎭 NFR</span>
-                        <span class="tab" id="tabSoakTests" onclick="showEditorTab('soakTests')">🔥 Soak</span>
+                        <span class="tab" id="tabSoakTests" onclick="showEditorTab('soakTests')">🌊 Soak</span>
                         <span class="tab" id="tabIntTests" onclick="showEditorTab('intTests')">🔗 Integration</span>
                         <span class="tab" id="tabLogs" onclick="showEditorTab('logs')">📋 Logs</span>
                         <span class="tab" id="tabBrowser" onclick="showEditorTab('browser')">🗂 Store</span>
@@ -3275,7 +3305,7 @@ public static class PlatinumForgeServer
                     <div id="pipeline-stats" style="display:none; padding:8px 12px; border-top:1px solid var(--border); font-size:11px; color:var(--text-dim);">
                         <span id="statUnitTests">🧪 Unit: —</span>
                         <span style="margin-left:12px" id="statNfrTests">🎭 NFR: —</span>
-                        <span style="margin-left:12px" id="statSoakTests">🔥 Soak: —</span>
+                        <span style="margin-left:12px" id="statSoakTests">🌊 Soak: —</span>
                         <span style="margin-left:12px" id="statIntTests">🔗 Int: —</span>
                         <span style="margin-left:12px" id="statArtifact">📦 —</span>
                     </div>
@@ -4057,7 +4087,7 @@ public static class PlatinumForgeServer
                         const LAYER_ICONS = {
                             Rules: '📜', Architecture: '🏗', NFR: '⚡', Invariants: '🔒',
                             Features: '✨', UnitTests: '🧪', Interfaces: '🔌', Code: '💻',
-                            NfrTests: '🎭', SoakTests: '🔥', IntegrationTests: '🔗'
+                            NfrTests: '🎭', SoakTests: '🌊', IntegrationTests: '🔗'
                         };
                         el.innerHTML = Object.entries(tree).map(([layer, files]) => {
                             const icon = LAYER_ICONS[layer] || '📁';
@@ -4318,7 +4348,7 @@ public static class PlatinumForgeServer
                                 <div style="font-size:11px; display:flex; gap:8px; margin-bottom:6px;">
                                     <span>🧪 ${unit}</span>
                                     <span>🎭 ${nfr}</span>
-                                    <span>🔥 ${soak}</span>
+                                    <span>🌊 ${soak}</span>
                                     <span>🔗 ${intg}</span>
                                 </div>
                                 <a href="/api/builds/download/${encodeURIComponent(fn)}" download
@@ -4349,7 +4379,7 @@ public class Program
     public static async Task Main(string[] args)
     {
         Console.WriteLine("╔══════════════════════════════════════╗");
-        Console.WriteLine("║    🔥 PlatinumForge — PlatinumForge v0.4  ║");
+        Console.WriteLine("║    Ψ WaveFunctionLabs — PlatinumForge v0.4  ║");
         Console.WriteLine("╚══════════════════════════════════════╝");
 
         // Start web server (user init happens on first request per-user)

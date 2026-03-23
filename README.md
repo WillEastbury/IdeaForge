@@ -2,7 +2,7 @@
 
 > **Describe what you want. PlatinumForge generates, tests, and publishes it.**
 
-PlatinumForge is a single-file C# web application that uses LLM-driven constraint satisfaction to generate working code through a autonomous software generation pipeline. Define your intent, constraints, and architecture — the engine generates interfaces, tests, code, runs them, and publishes a versioned artifact.
+PlatinumForge by WaveFunctionLabs is a single-file C# web application that uses LLM-driven constraint satisfaction to generate working code through a autonomous software generation pipeline. Define your intent, constraints, and architecture — the engine generates interfaces, tests, code, runs them, and publishes a versioned artifact.
 
 No scaffolding. No boilerplate. Just constraints in → working code out.
 
