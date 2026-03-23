@@ -2717,21 +2717,16 @@ public static class IdeaForgeServer
                 .status-dot.busy { background: var(--accent); animation: pulse 1s infinite; }
                 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-                /* Pipeline Progress Nav */
-                #pipeline-nav { display: flex; align-items: stretch; background: var(--surface); border-bottom: 2px solid var(--border); flex-shrink: 0; overflow-x: auto; }
-                .pipeline-arrow { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 20px 10px 28px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); cursor: pointer; user-select: none; background: var(--surface); transition: all 0.2s; white-space: nowrap; }
-                .pipeline-arrow:first-child { padding-left: 16px; }
-                .pipeline-arrow::after { content: ''; position: absolute; right: -12px; top: 0; width: 0; height: 0; border-top: 20px solid transparent; border-bottom: 20px solid transparent; border-left: 12px solid var(--surface); z-index: 2; transition: border-left-color 0.2s; }
-                .pipeline-arrow::before { content: ''; position: absolute; right: -14px; top: 0; width: 0; height: 0; border-top: 20px solid transparent; border-bottom: 20px solid transparent; border-left: 14px solid var(--border); z-index: 1; }
-                .pipeline-arrow:last-child::after, .pipeline-arrow:last-child::before { display: none; }
-                .pipeline-arrow:hover { background: var(--surface2); color: var(--text); }
-                .pipeline-arrow:hover::after { border-left-color: var(--surface2); }
-                .pipeline-arrow.active { background: linear-gradient(135deg, #1a1a2e, #16213e); color: var(--accent); }
-                .pipeline-arrow.active::after { border-left-color: #16213e; }
-                .pipeline-arrow.completed { background: #0d2818; color: var(--green); }
-                .pipeline-arrow.completed::after { border-left-color: #0d2818; }
+                /* Pipeline Chevron Flow */
+                #pipeline-nav { display: flex; align-items: stretch; flex-shrink: 0; overflow-x: auto; padding: 0; height: 44px; }
+                .pipeline-arrow { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 0 12px 0 24px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; color: var(--text-dim); cursor: pointer; user-select: none; background: var(--surface2); transition: all 0.15s; white-space: nowrap; clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 50%, calc(100% - 16px) 100%, 0 100%, 16px 50%); margin-left: -8px; }
+                .pipeline-arrow:first-child { clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 50%, calc(100% - 16px) 100%, 0 100%); margin-left: 0; padding-left: 16px; }
+                .pipeline-arrow:last-child { clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 16px 50%); }
+                .pipeline-arrow:hover { background: #252d3a; color: var(--text); }
+                .pipeline-arrow.active { background: linear-gradient(135deg, #1e2a4a, #1a3560); color: var(--accent); text-shadow: 0 0 8px rgba(249,115,22,0.3); }
+                .pipeline-arrow.completed { background: linear-gradient(135deg, #0d2818, #132f1e); color: var(--green); }
                 .pipeline-arrow .arrow-icon { font-size: 14px; }
-                .pipeline-arrow .arrow-badge { background: var(--accent); color: #000; font-size: 9px; padding: 1px 5px; border-radius: 6px; font-weight: 700; }
+                .pipeline-arrow .arrow-badge { background: var(--accent); color: #000; font-size: 9px; padding: 1px 5px; border-radius: 6px; font-weight: 700; min-width: 16px; text-align: center; }
                 .pipeline-arrow.completed .arrow-badge { background: var(--green); }
 
                 /* Main Layout */
