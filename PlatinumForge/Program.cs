@@ -4967,22 +4967,25 @@ public static class PlatinumForgeServer
                             '🔗 Integration Tests': 'integrationtests',
                             '☁️ Infrastructure': 'iac',
                         };
-                        // Code sub-groups all map to 'code' layer
-                        const CODE_FOLDERS = ['💻 Services','🚀 Startup','🔧 Extensions','📑 Enums','📦 Models','🌐 Controllers','🔗 Middleware','⚡ Statics'];
                         el.innerHTML = Object.entries(tree).map(([folder, files]) => {
-                            const backendLayer = LAYER_MAP[folder] || (CODE_FOLDERS.some(f => folder.startsWith(f.substring(0,2))) ? 'code' : 'code');
+                            const backendLayer = LAYER_MAP[folder] || 'code';
                             const hasFiles = files.length > 0;
                             return `<div class="tree-folder">
-                                <div class="tree-folder-label${hasFiles ? '' : ' empty'}" onclick="toggleTreeFolder(this)">
+                                <div class="tree-folder-label open" onclick="toggleTreeFolder(this)">
                                     <span class="folder-icon">▶</span>${folder}
                                     <span class="tree-file-count">${files.length}</span>
                                 </div>
-                                <div class="tree-folder-children">
+                                <div class="tree-folder-children open">
                                     ${files.map(f => `<div class="tree-file${activeFile && activeFile.layer === backendLayer && activeFile.key === f ? ' active' : ''}" onclick="viewStoreFile('${escAttr(backendLayer)}','${escAttr(f)}')">📄 ${escHtml(f)}</div>`).join('')}
                                 </div>
                             </div>`;
                         }).join('');
-                    } catch {}
+                        if (Object.keys(tree).length === 0) {
+                            el.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:12px;text-align:center;">No generated files yet.<br>Run Ψ Generate to create files.</div>';
+                        }
+                    } catch (ex) {
+                        console.error('refreshTree failed', ex);
+                    }
                 }
 
                 function toggleTreeFolder(label) {
