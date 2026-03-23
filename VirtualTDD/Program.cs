@@ -79,6 +79,15 @@ public class SystemState
     public Dictionary<string, string> SoakTests { get; set; } = new();
     public Dictionary<string, string> IntegrationTests { get; set; } = new();
 
+    // 5. Finetune — micro-corrections fed back to LLM on next generation
+    public string ArchitectureTweaks { get; set; } = "";        // single global note
+    public Dictionary<string, string> CodeTweaks { get; set; } = new();   // keyed by code file
+    public Dictionary<string, string> TestTweaks { get; set; } = new();   // keyed by test file
+
+    // 6. Deploy — IaC templates and per-file deployment corrections
+    public Dictionary<string, string> IaC { get; set; } = new();          // keyed by IaC file
+    public Dictionary<string, string> DeployTweaks { get; set; } = new(); // keyed by IaC file
+
     public SystemState Clone()
     {
         return new SystemState
@@ -104,6 +113,11 @@ public class SystemState
             NfrTests = new(NfrTests),
             SoakTests = new(SoakTests),
             IntegrationTests = new(IntegrationTests),
+            ArchitectureTweaks = ArchitectureTweaks,
+            CodeTweaks = new(CodeTweaks),
+            TestTweaks = new(TestTweaks),
+            IaC = new(IaC),
+            DeployTweaks = new(DeployTweaks),
         };
     }
 }
@@ -200,6 +214,40 @@ public static class PromptBuilder
         foreach (var (k, v) in state.Sliders)
             sb.AppendLine($"- {k}: {v}/100");
         sb.AppendLine();
+        return sb.ToString();
+    }
+
+    /// <summary>Build a tweaks addendum for a specific generation stage.</summary>
+    public static string BuildTweaks(SystemState state, string stage)
+    {
+        var sb = new StringBuilder();
+        // Architecture tweaks apply to interfaces and code stages
+        if ((stage == "interfaces" || stage == "code") && !string.IsNullOrEmpty(state.ArchitectureTweaks))
+        {
+            sb.AppendLine("\n⚠️ ARCHITECTURE CORRECTIONS (apply these structural changes):");
+            sb.AppendLine(state.ArchitectureTweaks);
+        }
+        // Code tweaks apply only to code stage
+        if (stage == "code" && state.CodeTweaks.Count > 0)
+        {
+            sb.AppendLine("\n⚠️ PER-FILE CODE CORRECTIONS (apply these fixes to the named files):");
+            foreach (var (file, fix) in state.CodeTweaks)
+                sb.AppendLine($"  [{file}]: {fix}");
+        }
+        // Test tweaks apply to all test stages
+        if ((stage == "unit" || stage == "nfr" || stage == "soak" || stage == "integration") && state.TestTweaks.Count > 0)
+        {
+            sb.AppendLine("\n⚠️ PER-FILE TEST CORRECTIONS (apply these fixes to the named test files):");
+            foreach (var (file, fix) in state.TestTweaks)
+                sb.AppendLine($"  [{file}]: {fix}");
+        }
+        // Deploy tweaks apply to IaC stage
+        if (stage == "iac" && state.DeployTweaks.Count > 0)
+        {
+            sb.AppendLine("\n⚠️ PER-FILE DEPLOYMENT CORRECTIONS:");
+            foreach (var (file, fix) in state.DeployTweaks)
+                sb.AppendLine($"  [{file}]: {fix}");
+        }
         return sb.ToString();
     }
 
@@ -492,7 +540,7 @@ public static class Generator
             Reference interfaces/classes you expect to exist (e.g., ICalculator, Calculator).
             """;
 
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "unit"));
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["core-tests"] = code };
     }
@@ -514,7 +562,7 @@ public static class Generator
             No class implementations, no using statements, no namespace.
             """;
 
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "interfaces"));
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["core-interfaces"] = code };
     }
@@ -575,7 +623,7 @@ public static class Generator
             No interfaces, no using statements, no namespace, no Main method.
             """;
 
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "code"));
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["core-impl"] = code };
     }
@@ -601,7 +649,7 @@ public static class Generator
 
             Output ONLY the TypeScript test code. No markdown fences, no explanations.
             """;
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "nfr"));
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["nfr-tests.spec.ts"] = code };
     }
@@ -627,7 +675,7 @@ public static class Generator
 
             Output ONLY the Python code. No markdown fences, no explanations.
             """;
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "soak"));
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["locustfile.py"] = code };
     }
@@ -657,9 +705,53 @@ public static class Generator
 
             Output ONLY the TypeScript test code. No markdown fences, no explanations.
             """;
-        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt);
+        var code = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "integration"));
         code = StripMarkdownFences(code);
         return new Dictionary<string, string> { ["integration.test.ts"] = code };
+    }
+
+    public static async Task<Dictionary<string, string>> GenerateIaC(SystemState state)
+    {
+        var context = PromptBuilder.BuildContext(state);
+        var existingIaC = state.IaC.Count > 0
+            ? "Existing IaC templates to update/extend:\n" + string.Join("\n", state.IaC.Select(kv => $"── {kv.Key} ──\n{kv.Value}"))
+            : "";
+        var deploymentInfo = string.Join("\n", state.Deployment.Select(kv => $"- {kv.Key}: {kv.Value}"));
+        var prompt =
+            $"""
+            Given these requirements:
+            {context}
+
+            And this deployment configuration:
+            {deploymentInfo}
+
+            {existingIaC}
+
+            Generate Infrastructure as Code files for deploying this application.
+            Include:
+            - Dockerfile (multi-stage build)
+            - docker-compose.yml (if applicable)
+            - Deployment manifests appropriate to the deployment target (Terraform, Bicep, ARM, Kubernetes YAML, etc.)
+            - CI/CD pipeline file (GitHub Actions)
+
+            Output as a JSON object where keys are filenames and values are the file contents.
+            Example: {"{"}\"Dockerfile\": \"FROM ...\", \"deploy.bicep\": \"...\"{"}"}
+            Output ONLY valid JSON. No markdown fences, no explanations.
+            """;
+        var raw = await OpenAIClient.Complete(BuildSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "iac"));
+        raw = StripMarkdownFences(raw);
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(raw);
+            var result = new Dictionary<string, string>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                result[prop.Name] = prop.Value.GetString() ?? "";
+            return result;
+        }
+        catch
+        {
+            return new Dictionary<string, string> { ["iac-output"] = raw };
+        }
     }
 
     public static string StripMarkdownFences(string s)
@@ -677,9 +769,21 @@ public static class Generator
 
 public class ChatEntry
 {
-    public string Role { get; set; } = ""; // "user", "system", "error", "success"
+    public string Role { get; set; } = ""; // "user", "system", "error", "success", "agent"
     public string Message { get; set; } = "";
     public string Timestamp { get; set; } = DateTime.UtcNow.ToString("o");
+    public List<ProposedAction>? Actions { get; set; } // null if no actions proposed
+}
+
+public class ProposedAction
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+    public string Label { get; set; } = "";     // human-readable, e.g. "Set rule: no-nulls"
+    public string Layer { get; set; } = "";      // target layer, e.g. "rules", "architecture"
+    public string Op { get; set; } = "set";      // "set", "remove", "replace", "set-string"
+    public string Key { get; set; } = "";         // dict key (or empty for string layers)
+    public string Value { get; set; } = "";       // new value
+    public bool Applied { get; set; } = false;
 }
 
 public class StateSnapshot
@@ -1364,6 +1468,11 @@ public static class IdeaForgeServer
                 ["nfrTests"] = state.NfrTests,
                 ["soakTests"] = state.SoakTests,
                 ["integrationTests"] = state.IntegrationTests,
+                ["architectureTweaks"] = state.ArchitectureTweaks,
+                ["codeTweaks"] = state.CodeTweaks,
+                ["testTweaks"] = state.TestTweaks,
+                ["iac"] = state.IaC,
+                ["deployTweaks"] = state.DeployTweaks,
                 ["committedAt"] = DateTime.UtcNow.ToString("o"),
             };
             File.WriteAllText(file, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
@@ -1403,6 +1512,11 @@ public static class IdeaForgeServer
                 if (root.TryGetProperty("nfrTests", out var nfrT)) s.NfrTests = JsonToDict(nfrT);
                 if (root.TryGetProperty("soakTests", out var soakT)) s.SoakTests = JsonToDict(soakT);
                 if (root.TryGetProperty("integrationTests", out var intT)) s.IntegrationTests = JsonToDict(intT);
+                if (root.TryGetProperty("architectureTweaks", out var at)) s.ArchitectureTweaks = at.GetString() ?? "";
+                if (root.TryGetProperty("codeTweaks", out var ct)) s.CodeTweaks = JsonToDict(ct);
+                if (root.TryGetProperty("testTweaks", out var tt)) s.TestTweaks = JsonToDict(tt);
+                if (root.TryGetProperty("iac", out var iac)) s.IaC = JsonToDict(iac);
+                if (root.TryGetProperty("deployTweaks", out var dt)) s.DeployTweaks = JsonToDict(dt);
                 return s;
             }
             catch { return null; }
@@ -1710,6 +1824,11 @@ public static class IdeaForgeServer
                         nfrTests = live.State.NfrTests,
                         soakTests = live.State.SoakTests,
                         integrationTests = live.State.IntegrationTests,
+                        architectureTweaks = live.State.ArchitectureTweaks,
+                        codeTweaks = live.State.CodeTweaks,
+                        testTweaks = live.State.TestTweaks,
+                        iac = live.State.IaC,
+                        deployTweaks = live.State.DeployTweaks,
                     },
                     code = live.CurrentSource,
                     generating = live.Generating,
@@ -1779,6 +1898,11 @@ public static class IdeaForgeServer
                     nfrTests = live.State.NfrTests,
                     soakTests = live.State.SoakTests,
                     integrationTests = live.State.IntegrationTests,
+                        architectureTweaks = live.State.ArchitectureTweaks,
+                        codeTweaks = live.State.CodeTweaks,
+                        testTweaks = live.State.TestTweaks,
+                        iac = live.State.IaC,
+                        deployTweaks = live.State.DeployTweaks,
                 });
             }
             else if (path == "/api/state" && method == "POST")
@@ -1802,6 +1926,11 @@ public static class IdeaForgeServer
                 if (root.TryGetProperty("nfr", out var n)) { live.State.NFR = JsonToDict(n); delta["nfr"] = live.State.NFR; }
                 if (root.TryGetProperty("stories", out var st)) { live.State.Stories = JsonToDict(st); delta["stories"] = live.State.Stories; }
                 if (root.TryGetProperty("sliders", out var sli)) { live.State.Sliders = JsonToIntDict(sli); delta["sliders"] = live.State.Sliders; }
+                if (root.TryGetProperty("architectureTweaks", out var at)) { live.State.ArchitectureTweaks = at.GetString() ?? ""; delta["architectureTweaks"] = live.State.ArchitectureTweaks; }
+                if (root.TryGetProperty("codeTweaks", out var ctw)) { live.State.CodeTweaks = JsonToDict(ctw); delta["codeTweaks"] = live.State.CodeTweaks; }
+                if (root.TryGetProperty("testTweaks", out var ttw)) { live.State.TestTweaks = JsonToDict(ttw); delta["testTweaks"] = live.State.TestTweaks; }
+                if (root.TryGetProperty("iac", out var iac)) { live.State.IaC = JsonToDict(iac); delta["iac"] = live.State.IaC; }
+                if (root.TryGetProperty("deployTweaks", out var dtw)) { live.State.DeployTweaks = JsonToDict(dtw); delta["deployTweaks"] = live.State.DeployTweaks; }
                 live.AddChat("system", "🔧 Constraints updated");
                 _ = live.Broadcast("state", delta, clientId);
                 _ = live.Broadcast("chat", new { role = "system", message = "🔧 Constraints updated" }, clientId);
@@ -1856,6 +1985,11 @@ public static class IdeaForgeServer
                             code = live.State.Code,
                             nfrTests = live.State.NfrTests, soakTests = live.State.SoakTests,
                             integrationTests = live.State.IntegrationTests,
+                        architectureTweaks = live.State.ArchitectureTweaks,
+                        codeTweaks = live.State.CodeTweaks,
+                        testTweaks = live.State.TestTweaks,
+                        iac = live.State.IaC,
+                        deployTweaks = live.State.DeployTweaks,
                         },
                         code = live.CurrentSource, generating = live.Generating,
                     }, clientId);
@@ -1869,6 +2003,172 @@ public static class IdeaForgeServer
             else if (path == "/api/chat" && method == "GET")
             {
                 body = JsonSerializer.Serialize(live.ChatLog);
+            }
+            else if (path == "/api/chat/send" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var message = doc.RootElement.GetProperty("message").GetString() ?? "";
+                live.AddChat("user", message);
+                _ = live.BroadcastAll("chat", new { role = "user", message });
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var stateJson = JsonSerializer.Serialize(new {
+                            description = live.State.Description, personas = live.State.Personas,
+                            rules = live.State.Rules, invariants = live.State.Invariants,
+                            architecture = live.State.Architecture, dataflow = live.State.Dataflow,
+                            frameworks = live.State.Frameworks, language = live.State.Language,
+                            deployment = live.State.Deployment,
+                            features = live.State.Features, nfr = live.State.NFR, stories = live.State.Stories,
+                            codeTweaks = live.State.CodeTweaks, testTweaks = live.State.TestTweaks,
+                            iac = live.State.IaC, deployTweaks = live.State.DeployTweaks,
+                            architectureTweaks = live.State.ArchitectureTweaks,
+                        });
+                        var chatHistory = string.Join("\n", live.ChatLog.TakeLast(20).Select(c => $"[{c.Role}] {c.Message}"));
+                        var response = await OpenAIClient.Complete(
+                            """
+                            You are a collaborative design agent for IdeaForge, a virtual TDD code generator.
+                            You help users refine their project specification across these layers:
+                            description, personas, rules, invariants, architecture, dataflow, frameworks, language,
+                            deployment, features, stories, nfr, codeTweaks, testTweaks, iac, deployTweaks, architectureTweaks.
+
+                            When you want to suggest a change, include a JSON block in your response wrapped in ```actions ... ```.
+                            The JSON is an array of action objects:
+                            [
+                              {"label": "human-readable description", "layer": "rules", "op": "set", "key": "no-nulls", "value": "Public methods must never return null"},
+                              {"label": "Remove old rule", "layer": "rules", "op": "remove", "key": "outdated-rule", "value": ""},
+                              {"label": "Set architecture note", "layer": "architectureTweaks", "op": "set-string", "key": "", "value": "Use vertical slice architecture"}
+                            ]
+                            ops: "set" = add/update a key-value pair, "remove" = delete a key, "set-string" = set a string-valued layer (architectureTweaks).
+
+                            Your conversational text goes OUTSIDE the actions block. Be helpful, concise, and opinionated.
+                            If the user is just chatting or asking questions, respond without actions.
+                            Always explain WHY you suggest each change.
+                            """,
+                            $"""
+                            Current project state:
+                            {stateJson}
+
+                            Recent chat:
+                            {chatHistory}
+
+                            User says: {message}
+                            """);
+
+                        // Parse response: extract actions block if present
+                        List<ProposedAction>? actions = null;
+                        var conversational = response;
+                        var actionsMatch = System.Text.RegularExpressions.Regex.Match(response, @"```actions\s*([\s\S]*?)```");
+                        if (actionsMatch.Success)
+                        {
+                            conversational = response[..actionsMatch.Index].TrimEnd() +
+                                response[(actionsMatch.Index + actionsMatch.Length)..].TrimStart();
+                            try
+                            {
+                                var actionsJson = actionsMatch.Groups[1].Value.Trim();
+                                var parsed = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(actionsJson);
+                                if (parsed != null)
+                                {
+                                    actions = parsed.Select(a => new ProposedAction
+                                    {
+                                        Label = a.GetValueOrDefault("label", ""),
+                                        Layer = a.GetValueOrDefault("layer", ""),
+                                        Op = a.GetValueOrDefault("op", "set"),
+                                        Key = a.GetValueOrDefault("key", ""),
+                                        Value = a.GetValueOrDefault("value", ""),
+                                    }).ToList();
+                                }
+                            }
+                            catch { /* actions parse failed, just show text */ }
+                        }
+
+                        var entry = new ChatEntry { Role = "agent", Message = conversational.Trim(), Actions = actions };
+                        live.ChatLog.Add(entry);
+                        _ = live.BroadcastAll("chat", new
+                        {
+                            role = "agent",
+                            message = entry.Message,
+                            actions = actions?.Select(a => new { a.Id, a.Label, a.Layer, a.Op, a.Key, a.Value, a.Applied }),
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        await BroadcastChat(live, "error", $"Agent error: {ex.Message}");
+                    }
+                });
+                body = JsonSerializer.Serialize(new { ok = true });
+            }
+            else if (path == "/api/chat/apply" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var actionId = doc.RootElement.GetProperty("actionId").GetString() ?? "";
+
+                // Find the action in chat history
+                ProposedAction? action = null;
+                foreach (var entry in live.ChatLog)
+                {
+                    if (entry.Actions == null) continue;
+                    action = entry.Actions.FirstOrDefault(a => a.Id == actionId);
+                    if (action != null) break;
+                }
+
+                if (action == null)
+                {
+                    body = JsonSerializer.Serialize(new { ok = false, error = "Action not found" });
+                }
+                else if (action.Applied)
+                {
+                    body = JsonSerializer.Serialize(new { ok = false, error = "Action already applied" });
+                }
+                else
+                {
+                    // Apply the action
+                    var delta = new Dictionary<string, object>();
+                    var layer = action.Layer;
+                    var op = action.Op;
+                    var key = action.Key;
+                    var value = action.Value;
+
+                    if (op == "set-string" && layer == "architectureTweaks")
+                    {
+                        live.State.ArchitectureTweaks = value;
+                        delta["architectureTweaks"] = value;
+                    }
+                    else
+                    {
+                        // Get the target dictionary
+                        var dict = layer switch
+                        {
+                            "description" => live.State.Description, "personas" => live.State.Personas,
+                            "rules" => live.State.Rules, "invariants" => live.State.Invariants,
+                            "architecture" => live.State.Architecture, "dataflow" => live.State.Dataflow,
+                            "frameworks" => live.State.Frameworks, "language" => live.State.Language,
+                            "deployment" => live.State.Deployment,
+                            "features" => live.State.Features, "nfr" => live.State.NFR,
+                            "stories" => live.State.Stories,
+                            "codeTweaks" => live.State.CodeTweaks, "testTweaks" => live.State.TestTweaks,
+                            "iac" => live.State.IaC, "deployTweaks" => live.State.DeployTweaks,
+                            _ => null,
+                        };
+
+                        if (dict != null)
+                        {
+                            if (op == "set") dict[key] = value;
+                            else if (op == "remove") dict.Remove(key);
+                            else if (op == "replace") dict[key] = value;
+                            delta[layer] = dict;
+                        }
+                    }
+
+                    action.Applied = true;
+                    live.AddChat("success", $"✅ Applied: {action.Label}");
+                    _ = live.BroadcastAll("state", delta);
+                    _ = live.BroadcastAll("chat", new { role = "success", message = $"✅ Applied: {action.Label}", appliedActionId = actionId });
+                    body = JsonSerializer.Serialize(new { ok = true, applied = action.Label });
+                }
             }
             else if (path == "/api/generating" && method == "GET")
             {
@@ -1988,6 +2288,10 @@ public static class IdeaForgeServer
                     ["NfrTests"] = live.State.NfrTests.Keys.ToList(),
                     ["SoakTests"] = live.State.SoakTests.Keys.ToList(),
                     ["IntegrationTests"] = live.State.IntegrationTests.Keys.ToList(),
+                    ["CodeTweaks"] = live.State.CodeTweaks.Keys.ToList(),
+                    ["TestTweaks"] = live.State.TestTweaks.Keys.ToList(),
+                    ["IaC"] = live.State.IaC.Keys.ToList(),
+                    ["DeployTweaks"] = live.State.DeployTweaks.Keys.ToList(),
                 };
                 body = JsonSerializer.Serialize(tree);
             }
@@ -2016,6 +2320,10 @@ public static class IdeaForgeServer
                     "nfrtests" => live.State.NfrTests,
                     "soaktests" => live.State.SoakTests,
                     "integrationtests" => live.State.IntegrationTests,
+                    "codetweaks" => live.State.CodeTweaks,
+                    "testtweaks" => live.State.TestTweaks,
+                    "iac" => live.State.IaC,
+                    "deploytweaks" => live.State.DeployTweaks,
                     _ => null,
                 };
                 if (dict != null && dict.TryGetValue(key, out var content))
@@ -2202,25 +2510,33 @@ public static class IdeaForgeServer
             if (unitTestsPassed)
             {
                 // Stage 5: NFR Tests (Playwright)
-                await BroadcastChat(live, "system", "⏳ [5/8] Generating NFR Tests (Playwright)...");
+                await BroadcastChat(live, "system", "⏳ [5/9] Generating NFR Tests (Playwright)...");
                 live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
                 await BroadcastChat(live, "system", "✅ NFR Tests generated");
                 await RunExternalTests(live, "nfr", "Playwright", live.State.NfrTests);
 
                 // Stage 6: Soak / Performance Tests (Locust)
-                await BroadcastChat(live, "system", "⏳ [6/8] Generating Soak Tests (Locust)...");
+                await BroadcastChat(live, "system", "⏳ [6/9] Generating Soak Tests (Locust)...");
                 live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
                 await BroadcastChat(live, "system", "✅ Soak Tests generated");
                 await RunExternalTests(live, "soak", "Locust", live.State.SoakTests);
 
                 // Stage 7: Integration Tests (Jest)
-                await BroadcastChat(live, "system", "⏳ [7/8] Generating Integration Tests (Jest)...");
+                await BroadcastChat(live, "system", "⏳ [7/9] Generating Integration Tests (Jest)...");
                 live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
                 await BroadcastChat(live, "system", "✅ Integration Tests generated");
                 await RunExternalTests(live, "integration", "Jest", live.State.IntegrationTests);
 
-                // Stage 8: Publish artifact
-                await BroadcastChat(live, "system", "⏳ [8/8] Publishing artifact...");
+                // Stage 8: IaC Generation
+                if (live.State.Deployment.Count > 0 || live.State.IaC.Count > 0)
+                {
+                    await BroadcastChat(live, "system", "⏳ [8/9] Generating Infrastructure as Code...");
+                    live.State.IaC = await Generator.GenerateIaC(live.State);
+                    await BroadcastChat(live, "system", $"✅ IaC generated ({live.State.IaC.Count} files)");
+                }
+
+                // Stage 9: Publish artifact
+                await BroadcastChat(live, "system", "⏳ [9/9] Publishing artifact...");
                 var artifactPath = await PublishArtifact(live, userSub);
                 await BroadcastChat(live, "success", $"📦 Artifact published: {artifactPath}");
             }
@@ -2576,6 +2892,15 @@ public static class IdeaForgeServer
             foreach (var (name, src) in live.State.IntegrationTests)
                 File.WriteAllText(Path.Combine(testsDir, name), src);
 
+            // Write IaC files
+            if (live.State.IaC.Count > 0)
+            {
+                var iacDir = Path.Combine(tempDir, "iac");
+                Directory.CreateDirectory(iacDir);
+                foreach (var (name, src) in live.State.IaC)
+                    File.WriteAllText(Path.Combine(iacDir, name), src);
+            }
+
             // Write full constraints as JSON
             var constraints = new Dictionary<string, object>
             {
@@ -2787,6 +3112,12 @@ public static class IdeaForgeServer
                 .chat-entry.system { background: rgba(88,166,255,0.06); color: var(--text-dim); }
                 .chat-entry.error { background: rgba(248,81,73,0.1); color: var(--red); border-left: 3px solid var(--red); }
                 .chat-entry.success { background: rgba(63,185,80,0.1); color: var(--green); border-left: 3px solid var(--green); }
+                .chat-entry.agent { background: rgba(188,140,255,0.1); border-left: 3px solid var(--purple); }
+                .chat-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+                .chat-action-btn { background: var(--surface2); border: 1px solid var(--purple); color: var(--purple); padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.15s; display: inline-flex; align-items: center; gap: 4px; }
+                .chat-action-btn:hover { background: var(--purple); color: #fff; }
+                .chat-action-btn.applied { background: var(--green); border-color: var(--green); color: #000; cursor: default; opacity: 0.7; }
+                .chat-action-btn .action-layer { font-size: 9px; opacity: 0.7; text-transform: uppercase; }
                 .chat-time { font-size: 10px; color: var(--text-dim); margin-bottom: 2px; }
 
                 /* History Panel */
@@ -2909,10 +3240,11 @@ public static class IdeaForgeServer
                 <div id="left">
                     <div id="constraints"></div>
                     <div id="prompt-area">
-                        <textarea id="prompt-input" rows="3" placeholder="Describe what to build or change... e.g. 'Add a string reversal utility' or 'Make Divide return a tuple instead of Result'"></textarea>
+                        <textarea id="prompt-input" rows="3" placeholder="Chat with the agent about your design, or describe what to build..."></textarea>
                         <div id="prompt-actions">
+                            <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">💬 Chat</button>
                             <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">🔥 Generate</button>
-                            <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regenerate</button>
+                            <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
                         </div>
                     </div>
                     <div id="chat"></div>
@@ -3047,7 +3379,20 @@ public static class IdeaForgeServer
 
                     es.addEventListener('chat', e => {
                         const d = JSON.parse(e.data);
-                        appendChatEntry(d.role, d.message);
+                        if (d.appliedActionId) {
+                            // Mark action as applied in existing chat
+                            const btn = document.querySelector(`[data-action-id="${d.appliedActionId}"]`);
+                            if (btn) { btn.className = 'chat-action-btn applied'; btn.disabled = true; btn.innerHTML = '✅ ' + btn.textContent; }
+                        }
+                        let actionsHtml = '';
+                        if (d.actions && d.actions.length > 0) {
+                            actionsHtml = `<div class="chat-actions">${d.actions.map(a =>
+                                a.Applied
+                                    ? `<button class="chat-action-btn applied" disabled>✅ ${escHtml(a.Label)} <span class="action-layer">${a.Layer}</span></button>`
+                                    : `<button class="chat-action-btn" data-action-id="${a.Id}" onclick="applyAction('${a.Id}')">▶ ${escHtml(a.Label)} <span class="action-layer">${a.Layer}</span></button>`
+                            ).join('')}</div>`;
+                        }
+                        appendChatEntry(d.role, d.message, actionsHtml);
                     });
 
                     es.addEventListener('code', e => {
@@ -3120,12 +3465,12 @@ public static class IdeaForgeServer
                     badge.textContent = clientCount > 1 ? `${clientCount} online` : '';
                 }
 
-                function appendChatEntry(role, message) {
+                function appendChatEntry(role, message, actionsHtml = '') {
                     const el = document.getElementById('chat');
                     const t = new Date().toLocaleTimeString();
                     const div = document.createElement('div');
                     div.className = `chat-entry ${role}`;
-                    div.innerHTML = `<div class="chat-time">${t}</div>${escHtml(message)}`;
+                    div.innerHTML = `<div class="chat-time">${t}</div>${escHtml(message)}${actionsHtml}`;
                     el.appendChild(div);
                     el.scrollTop = el.scrollHeight;
                     lastChatLen++;
@@ -3143,6 +3488,8 @@ public static class IdeaForgeServer
                     { name: 'Shape', icon: '🏗️', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'] },
                     { name: 'Behaviour', icon: '🎭', layers: ['features', 'stories', 'nfr'] },
                     { name: 'Quality', icon: '🎚️', layers: [] }, // sliders, no constraint layers
+                    { name: 'Finetune', icon: '🔧', layers: ['architectureTweaks', 'codeTweaks', 'testTweaks'] },
+                    { name: 'Deploy', icon: '🚀', layers: ['iac', 'deployTweaks'] },
                 ];
                 const LAYERS = LAYER_GROUPS.flatMap(g => g.layers);
                 const LAYER_LABELS = {
@@ -3150,6 +3497,8 @@ public static class IdeaForgeServer
                     rules: 'Rules', invariants: 'Invariants',
                     architecture: 'Architecture', dataflow: 'Dataflow', frameworks: 'Frameworks & Tools', language: 'Language', deployment: 'Deployment',
                     features: 'Features', stories: 'Stories', nfr: 'NFR',
+                    architectureTweaks: 'Architecture Tweaks', codeTweaks: 'Code Tweaks (per file)', testTweaks: 'Test Tweaks (per file)',
+                    iac: 'IaC Templates', deployTweaks: 'Deploy Tweaks (per file)',
                 };
 
                 let activeStage = 0;
@@ -3157,7 +3506,11 @@ public static class IdeaForgeServer
                 function stageItemCount(idx) {
                     const group = LAYER_GROUPS[idx];
                     if (idx === 4) return Object.keys(currentState.sliders || {}).length;
-                    return group.layers.reduce((sum, l) => sum + Object.keys(currentState[l] || {}).length, 0);
+                    return group.layers.reduce((sum, l) => {
+                        const val = currentState[l];
+                        if (typeof val === 'string') return sum + (val.length > 0 ? 1 : 0);
+                        return sum + Object.keys(val || {}).length;
+                    }, 0);
                 }
 
                 function renderPipelineNav() {
@@ -3355,7 +3708,15 @@ public static class IdeaForgeServer
                         const el = document.getElementById('chat');
                         el.innerHTML = entries.map(e => {
                             const t = new Date(e.Timestamp).toLocaleTimeString();
-                            return `<div class="chat-entry ${e.Role}"><div class="chat-time">${t}</div>${escHtml(e.Message)}</div>`;
+                            let actionsHtml = '';
+                            if (e.Actions && e.Actions.length > 0) {
+                                actionsHtml = `<div class="chat-actions">${e.Actions.map(a =>
+                                    a.Applied
+                                        ? `<button class="chat-action-btn applied" disabled>✅ ${escHtml(a.Label)} <span class="action-layer">${a.Layer}</span></button>`
+                                        : `<button class="chat-action-btn" onclick="applyAction('${a.Id}')">▶ ${escHtml(a.Label)} <span class="action-layer">${a.Layer}</span></button>`
+                                ).join('')}</div>`;
+                            }
+                            return `<div class="chat-entry ${e.Role}"><div class="chat-time">${t}</div>${escHtml(e.Message)}${actionsHtml}</div>`;
                         }).join('');
                         el.scrollTop = el.scrollHeight;
                     } catch {}
@@ -3418,7 +3779,30 @@ public static class IdeaForgeServer
                         return;
                     }
 
+                    const STRING_LAYERS = ['architectureTweaks']; // single-string layers
+
                     const groupHtml = group.layers.map(layer => {
+                        // Single-string layer (e.g. architectureTweaks)
+                        if (STRING_LAYERS.includes(layer)) {
+                            const val = currentState[layer] || '';
+                            return `<div class="constraint-section">
+                                <div class="constraint-header" onclick="toggleSection(this)">
+                                    <span>${LAYER_LABELS[layer]}</span>
+                                    <span class="badge">${val.length > 0 ? '✓' : '—'}</span>
+                                </div>
+                                <div class="constraint-body open" id="body-${layer}">
+                                    <div style="padding:4px;">
+                                        <textarea id="string-${layer}" style="width:100%;min-height:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:4px;font-size:12px;resize:vertical;font-family:inherit;"
+                                            placeholder="Enter global ${LAYER_LABELS[layer].toLowerCase()}...">${escHtml(val)}</textarea>
+                                    </div>
+                                    <div class="constraint-actions">
+                                        <button class="btn-sm save" onclick="saveStringLayer('${layer}')">💾 Save</button>
+                                    </div>
+                                </div>
+                            </div>`;
+                        }
+
+                        // Dict-based layer (per-file key/value)
                         const data = currentState[layer] || {};
                         const entries = Object.entries(data);
                         return `<div class="constraint-section">
@@ -3443,6 +3827,15 @@ public static class IdeaForgeServer
                         <div class="layer-group-title">${group.icon} ${group.name}</div>
                         ${groupHtml}
                     </div>`;
+                    renderPipelineNav();
+                }
+
+                async function saveStringLayer(layer) {
+                    const val = document.getElementById('string-' + layer).value;
+                    currentState[layer] = val;
+                    const payload = {};
+                    payload[layer] = val;
+                    await apiFetch('/api/state', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
                     renderPipelineNav();
                 }
 
@@ -3517,6 +3910,49 @@ public static class IdeaForgeServer
                         body: JSON.stringify({ prompt })
                     });
                     setTimeout(refreshAll, 500);
+                }
+
+                async function sendChat() {
+                    const input = document.getElementById('prompt-input');
+                    const message = input.value.trim();
+                    if (!message) return;
+                    input.value = '';
+                    appendChatEntry('user', message);
+                    try {
+                        const r = await apiFetch('/api/chat/send', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ message })
+                        });
+                        const d = await r.json();
+                        if (d.reply) {
+                            let actionsHtml = '';
+                            if (d.actions && d.actions.length > 0) {
+                                actionsHtml = `<div class="chat-actions">${d.actions.map(a =>
+                                    `<button class="chat-action-btn" data-action-id="${a.Id}" onclick="applyAction('${a.Id}')">▶ ${escHtml(a.Label)} <span class="action-layer">${a.Layer}</span></button>`
+                                ).join('')}</div>`;
+                            }
+                            appendChatEntry('agent', d.reply, actionsHtml);
+                        }
+                    } catch (ex) {
+                        appendChatEntry('error', 'Chat failed: ' + ex.message);
+                    }
+                }
+
+                async function applyAction(actionId) {
+                    const btn = document.querySelector(`[data-action-id="${actionId}"]`);
+                    if (btn) { btn.disabled = true; btn.textContent = '⏳ Applying...'; }
+                    try {
+                        await apiFetch('/api/chat/apply', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ actionId })
+                        });
+                        if (btn) { btn.className = 'chat-action-btn applied'; btn.innerHTML = '✅ Applied'; }
+                        await refreshState();
+                    } catch (ex) {
+                        if (btn) { btn.disabled = false; btn.textContent = '❌ Failed'; }
+                    }
                 }
 
                 async function revertTo(idx) {
