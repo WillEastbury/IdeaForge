@@ -2717,6 +2717,23 @@ public static class IdeaForgeServer
                 .status-dot.busy { background: var(--accent); animation: pulse 1s infinite; }
                 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 
+                /* Pipeline Progress Nav */
+                #pipeline-nav { display: flex; align-items: stretch; background: var(--surface); border-bottom: 2px solid var(--border); flex-shrink: 0; overflow-x: auto; }
+                .pipeline-arrow { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 20px 10px 28px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); cursor: pointer; user-select: none; background: var(--surface); transition: all 0.2s; white-space: nowrap; }
+                .pipeline-arrow:first-child { padding-left: 16px; }
+                .pipeline-arrow::after { content: ''; position: absolute; right: -12px; top: 0; width: 0; height: 0; border-top: 20px solid transparent; border-bottom: 20px solid transparent; border-left: 12px solid var(--surface); z-index: 2; transition: border-left-color 0.2s; }
+                .pipeline-arrow::before { content: ''; position: absolute; right: -14px; top: 0; width: 0; height: 0; border-top: 20px solid transparent; border-bottom: 20px solid transparent; border-left: 14px solid var(--border); z-index: 1; }
+                .pipeline-arrow:last-child::after, .pipeline-arrow:last-child::before { display: none; }
+                .pipeline-arrow:hover { background: var(--surface2); color: var(--text); }
+                .pipeline-arrow:hover::after { border-left-color: var(--surface2); }
+                .pipeline-arrow.active { background: linear-gradient(135deg, #1a1a2e, #16213e); color: var(--accent); }
+                .pipeline-arrow.active::after { border-left-color: #16213e; }
+                .pipeline-arrow.completed { background: #0d2818; color: var(--green); }
+                .pipeline-arrow.completed::after { border-left-color: #0d2818; }
+                .pipeline-arrow .arrow-icon { font-size: 14px; }
+                .pipeline-arrow .arrow-badge { background: var(--accent); color: #000; font-size: 9px; padding: 1px 5px; border-radius: 6px; font-weight: 700; }
+                .pipeline-arrow.completed .arrow-badge { background: var(--green); }
+
                 /* Main Layout */
                 #main { display: flex; flex: 1; overflow: hidden; }
 
@@ -2724,7 +2741,7 @@ public static class IdeaForgeServer
                 #left { width: 420px; min-width: 320px; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface); overflow: hidden; }
 
                 /* Constraints */
-                #constraints { flex: 0 0 auto; max-height: 40%; overflow-y: auto; border-bottom: 1px solid var(--border); }
+                #constraints { flex: 1 1 auto; overflow-y: auto; border-bottom: 1px solid var(--border); }
                 .constraint-section { border-bottom: 1px solid var(--border); }
                 .constraint-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--surface2); cursor: pointer; user-select: none; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
                 .constraint-header:hover { color: var(--text); }
@@ -2891,15 +2908,11 @@ public static class IdeaForgeServer
                 </div>
             </div>
 
+            <div id="pipeline-nav"></div>
+
             <div id="main">
                 <div id="left">
                     <div id="constraints"></div>
-                    <div id="sliders-panel">
-                        <div class="layer-group">
-                            <div class="layer-group-title" style="cursor:pointer;" onclick="document.getElementById('sliders-body').classList.toggle('open')">🎚️ Quality Sliders</div>
-                            <div id="sliders-body" class="constraint-body"></div>
-                        </div>
-                    </div>
                     <div id="prompt-area">
                         <textarea id="prompt-input" rows="3" placeholder="Describe what to build or change... e.g. 'Add a string reversal utility' or 'Make Divide return a tuple instead of Result'"></textarea>
                         <div id="prompt-actions">
@@ -3015,8 +3028,8 @@ public static class IdeaForgeServer
                         const d = JSON.parse(e.data);
                         if (d.state) {
                             currentState = d.state;
+                            renderPipelineNav();
                             renderConstraints();
-                            renderSliders();
                             syncProjectMeta();
                         }
                         if (d.code && editor && currentTab !== 'browser') {
@@ -3032,8 +3045,8 @@ public static class IdeaForgeServer
                     es.addEventListener('state', e => {
                         const d = JSON.parse(e.data);
                         Object.assign(currentState, d);
+                        renderPipelineNav();
                         renderConstraints();
-                        renderSliders();
                         syncProjectMeta();
                     });
 
@@ -3130,10 +3143,11 @@ public static class IdeaForgeServer
                 }
 
                 const LAYER_GROUPS = [
-                    { name: '0 · Intent', layers: ['description', 'personas'] },
-                    { name: '1 · Constraints', layers: ['rules', 'invariants'] },
-                    { name: '2 · Shape', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'] },
-                    { name: '3 · Behaviour', layers: ['features', 'stories', 'nfr'] },
+                    { name: 'Intent', icon: '💡', layers: ['description', 'personas'] },
+                    { name: 'Constraints', icon: '📏', layers: ['rules', 'invariants'] },
+                    { name: 'Shape', icon: '🏗️', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'] },
+                    { name: 'Behaviour', icon: '🎭', layers: ['features', 'stories', 'nfr'] },
+                    { name: 'Quality', icon: '🎚️', layers: [] }, // sliders, no constraint layers
                 ];
                 const LAYERS = LAYER_GROUPS.flatMap(g => g.layers);
                 const LAYER_LABELS = {
@@ -3142,6 +3156,33 @@ public static class IdeaForgeServer
                     architecture: 'Architecture', dataflow: 'Dataflow', frameworks: 'Frameworks & Tools', language: 'Language', deployment: 'Deployment',
                     features: 'Features', stories: 'Stories', nfr: 'NFR',
                 };
+
+                let activeStage = 0;
+
+                function stageItemCount(idx) {
+                    const group = LAYER_GROUPS[idx];
+                    if (idx === 4) return Object.keys(currentState.sliders || {}).length;
+                    return group.layers.reduce((sum, l) => sum + Object.keys(currentState[l] || {}).length, 0);
+                }
+
+                function renderPipelineNav() {
+                    const nav = document.getElementById('pipeline-nav');
+                    nav.innerHTML = LAYER_GROUPS.map((g, i) => {
+                        const count = stageItemCount(i);
+                        const cls = i === activeStage ? 'active' : (count > 0 && i < activeStage ? 'completed' : '');
+                        return `<div class="pipeline-arrow ${cls}" onclick="setStage(${i})">
+                            <span class="arrow-icon">${g.icon}</span>
+                            <span>${g.name}</span>
+                            ${count > 0 ? `<span class="arrow-badge">${count}</span>` : ''}
+                        </div>`;
+                    }).join('');
+                }
+
+                function setStage(idx) {
+                    activeStage = idx;
+                    renderPipelineNav();
+                    renderConstraints();
+                }
 
                 const PRESETS = {
                     description: [
@@ -3256,10 +3297,9 @@ public static class IdeaForgeServer
                     'solid':         { lo: 'Pragmatic', hi: 'Strict SOLID', icon: '📐' },
                 };
 
-                function renderSliders() {
-                    const el = document.getElementById('sliders-body');
+                function buildSlidersHtml() {
                     const sliders = currentState.sliders || {};
-                    el.innerHTML = Object.entries(SLIDER_META).map(([key, meta]) => {
+                    return Object.entries(SLIDER_META).map(([key, meta]) => {
                         const val = sliders[key] ?? 50;
                         return `<div class="slider-row">
                             <label>${meta.icon} ${key.replace(/-/g,' ')}</label>
@@ -3271,13 +3311,19 @@ public static class IdeaForgeServer
                     }).join('') + `<div class="slider-save"><button class="btn-sm save" onclick="saveSliders()">💾 Save sliders</button></div>`;
                 }
 
+                function renderSliders() {
+                    // Only re-render if quality stage is active (sliders are in constraints panel now)
+                    if (activeStage === 4) renderConstraints();
+                }
+
                 async function saveSliders() {
                     const sliders = {};
-                    document.querySelectorAll('#sliders-body input[type=range]').forEach(inp => {
+                    document.querySelectorAll('#constraints input[type=range]').forEach(inp => {
                         sliders[inp.dataset.slider] = parseInt(inp.value);
                     });
                     currentState.sliders = sliders;
                     await apiFetch('/api/state', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ sliders }) });
+                    renderPipelineNav();
                 }
 
                 async function pollLoop() {
@@ -3356,41 +3402,53 @@ public static class IdeaForgeServer
                     try {
                         const r = await fetch('/api/state');
                         currentState = await r.json();
+                        renderPipelineNav();
                         renderConstraints();
-                        renderSliders();
                         syncProjectMeta();
                     } catch {}
                 }
 
                 function renderConstraints() {
                     const el = document.getElementById('constraints');
-                    el.innerHTML = LAYER_GROUPS.map(group => {
-                        const groupHtml = group.layers.map(layer => {
-                            const data = currentState[layer] || {};
-                            const entries = Object.entries(data);
-                            return `<div class="constraint-section">
-                                <div class="constraint-header" onclick="toggleSection(this)">
-                                    <span>${LAYER_LABELS[layer]}</span>
-                                    <span class="badge">${entries.length}</span>
+                    const group = LAYER_GROUPS[activeStage];
+
+                    // Stage 4 = Quality Sliders
+                    if (activeStage === 4) {
+                        renderSliders();
+                        const slidersHtml = buildSlidersHtml();
+                        el.innerHTML = `<div class="layer-group" style="padding:8px;">
+                            <div class="layer-group-title">${group.icon} ${group.name}</div>
+                            ${slidersHtml}
+                        </div>`;
+                        return;
+                    }
+
+                    const groupHtml = group.layers.map(layer => {
+                        const data = currentState[layer] || {};
+                        const entries = Object.entries(data);
+                        return `<div class="constraint-section">
+                            <div class="constraint-header" onclick="toggleSection(this)">
+                                <span>${LAYER_LABELS[layer]}</span>
+                                <span class="badge">${entries.length}</span>
+                            </div>
+                            <div class="constraint-body open" id="body-${layer}">
+                                ${entries.map(([k,v]) => `<div class="constraint-item">
+                                    <input value="${escAttr(k)}" data-layer="${layer}" data-oldkey="${escAttr(k)}" />
+                                    <textarea data-layer="${layer}" data-key="${escAttr(k)}">${escHtml(v)}</textarea>
+                                </div>`).join('')}
+                                <div class="constraint-actions" style="position:relative;">
+                                    <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
+                                    <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
+                                    ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
                                 </div>
-                                <div class="constraint-body" id="body-${layer}">
-                                    ${entries.map(([k,v]) => `<div class="constraint-item">
-                                        <input value="${escAttr(k)}" data-layer="${layer}" data-oldkey="${escAttr(k)}" />
-                                        <textarea data-layer="${layer}" data-key="${escAttr(k)}">${escHtml(v)}</textarea>
-                                    </div>`).join('')}
-                                    <div class="constraint-actions" style="position:relative;">
-                                        <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
-                                        <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
-                                        ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
-                                    </div>
-                                </div>
-                            </div>`;
-                        }).join('');
-                        return `<div class="layer-group">
-                            <div class="layer-group-title">${group.name}</div>
-                            ${groupHtml}
+                            </div>
                         </div>`;
                     }).join('');
+                    el.innerHTML = `<div class="layer-group">
+                        <div class="layer-group-title">${group.icon} ${group.name}</div>
+                        ${groupHtml}
+                    </div>`;
+                    renderPipelineNav();
                 }
 
                 function toggleSection(header) {
@@ -3403,7 +3461,6 @@ public static class IdeaForgeServer
                     const key = 'new-' + Date.now();
                     currentState[layer][key] = '';
                     renderConstraints();
-                    document.getElementById('body-' + layer).classList.add('open');
                 }
 
                 function togglePresets(layer, btn) {
