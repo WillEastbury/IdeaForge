@@ -3022,7 +3022,7 @@ public static class PlatinumForgeServer
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <title>WaveFunctionLabs — Sign In</title>
-            " + FaviconLink + @"
+            %%FAVICON%%
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; align-items: center; justify-content: center; }
@@ -3040,7 +3040,7 @@ public static class PlatinumForgeServer
         </head>
         <body>
             <div class="login-card">
-                <div class="logo-icon">" + PsiLogoSvg + @"</div>
+                <div class="logo-icon">%%PSILOGO%%</div>
                 <div class="logo-text">WaveFunctionLabs</div>
                 <div class="logo-sub">PlatinumForge · What if software built itself?</div>
                 <div class="login-buttons">
@@ -3050,7 +3050,7 @@ public static class PlatinumForgeServer
             </div>
         </body>
         </html>
-        """;
+        """.Replace("%%FAVICON%%", FaviconLink).Replace("%%PSILOGO%%", PsiLogoSvg);
     }
 
     private static string HtmlPage() =>
@@ -3061,7 +3061,7 @@ public static class PlatinumForgeServer
             <meta charset="utf-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1" />
             <title>WaveFunctionLabs — PlatinumForge</title>
-            " + FaviconLink + @"
+            %%FAVICON%%
             <style>
                 * { margin: 0; padding: 0; box-sizing: border-box; }
                 :root {
@@ -3251,7 +3251,7 @@ public static class PlatinumForgeServer
         <body>
             <div id="header">
                 <div class="logo">
-                    <span class="logo-icon">" + PsiLogoSvg + @"</span>
+                    <span class="logo-icon">%%PSILOGO%%</span>
                     <div>
                         <div class="logo-text">WaveFunctionLabs</div>
                         <div class="logo-sub">PlatinumForge · What if software built itself?</div>
@@ -4376,7 +4376,7 @@ public static class PlatinumForgeServer
             </script>
         </body>
         </html>
-        """;
+        """.Replace("%%FAVICON%%", FaviconLink).Replace("%%PSILOGO%%", PsiLogoSvg);
 
     public static void Stop()
     {
