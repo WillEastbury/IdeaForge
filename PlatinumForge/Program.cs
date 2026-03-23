@@ -3311,8 +3311,15 @@ public static class PlatinumForgeServer
                 .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
                 .btn-secondary:hover { border-color: var(--accent); }
 
-                /* Chat */
-                #chat { flex: 1; overflow-y: auto; padding: 8px; }
+                /* Chat Flyout */
+                #chat-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
+                #chat-flyout { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; background: var(--surface); border-left: 2px solid var(--accent); z-index: 1000; display: flex; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.4); }
+                #chat-flyout #chat { flex: 1; overflow-y: auto; padding: 8px; }
+                #chat-flyout #prompt-area { border-top: 1px solid var(--border); padding: 10px; }
+                #chat-flyout #prompt-area textarea { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 6px; font-size: 13px; resize: vertical; font-family: inherit; }
+                #chat-flyout #prompt-area textarea:focus { border-color: var(--accent); outline: none; }
+                #chat-flyout #prompt-actions { display: flex; gap: 6px; margin-top: 6px; }
+                /* Chat entries */
                 .chat-entry { padding: 6px 10px; margin-bottom: 4px; border-radius: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
                 .chat-entry.user { background: rgba(59,130,246,0.1); border-left: 3px solid var(--accent); }
                 .chat-entry.system { background: rgba(88,166,255,0.06); color: var(--text-dim); }
@@ -3371,7 +3378,7 @@ public static class PlatinumForgeServer
                 .btn-sessions:hover { filter: brightness(1.15); transform: translateY(-1px); }
 
                 /* Session Flyout */
-                #session-overlay, #share-overlay, #builds-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
+                #session-overlay, #share-overlay, #builds-overlay, #chat-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
                 #session-flyout { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; background: var(--surface); border-left: 2px solid var(--purple); z-index: 1000; display: flex; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.4); }
                 .flyout-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, #1a1a2e, #16213e); border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 700; color: var(--purple); }
                 .flyout-close { background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
@@ -3431,6 +3438,7 @@ public static class PlatinumForgeServer
                         onchange="updateProjectMeta()" />
                 </div>
                 <div class="header-status">
+                    <button class="btn" style="font-size:12px;" onclick="toggleChatFlyout()">💬 Chat</button>
                     <button class="btn" style="font-size:12px;" onclick="toggleBuildsFlyout()">📦 Builds</button>
                     <button class="btn" style="font-size:12px;" onclick="exportDefinitions()">📤 Export</button>
                     <button class="btn" style="font-size:12px;" onclick="importDefinitions()">📥 Import</button>
@@ -3448,15 +3456,6 @@ public static class PlatinumForgeServer
             <div id="main">
                 <div id="left">
                     <div id="constraints"></div>
-                    <div id="prompt-area">
-                        <textarea id="prompt-input" rows="3" placeholder="Chat with the agent about your design, or describe what to build..."></textarea>
-                        <div id="prompt-actions">
-                            <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">💬 Chat</button>
-                            <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">Ψ Generate</button>
-                            <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
-                        </div>
-                    </div>
-                    <div id="chat"></div>
                     <div id="history-panel">
                         <div class="history-header"><span>📜 History</span><span id="historyCount">0</span></div>
                         <div id="history-list"></div>
@@ -3515,6 +3514,24 @@ public static class PlatinumForgeServer
                 <div class="share-actions">
                     <button class="btn btn-secondary" onclick="closeShareDialog()">Close</button>
                     <button class="btn btn-primary" onclick="copyShareUrl()">📋 Copy</button>
+                </div>
+            </div>
+
+            <!-- Chat Flyout -->
+            <div id="chat-overlay" onclick="toggleChatFlyout()" style="display:none;"></div>
+            <div id="chat-flyout" style="display:none;">
+                <div class="flyout-header">
+                    <span>💬 Chat</span>
+                    <button class="flyout-close" onclick="toggleChatFlyout()">✕</button>
+                </div>
+                <div id="chat"></div>
+                <div id="prompt-area">
+                    <textarea id="prompt-input" rows="2" placeholder="Chat with the agent about your design, or describe what to build..."></textarea>
+                    <div id="prompt-actions">
+                        <button class="btn btn-primary" onclick="sendChat()" style="background:var(--purple);border-color:var(--purple);">💬 Send</button>
+                        <button class="btn btn-primary" id="generateBtn" onclick="submitPrompt()">Ψ Generate</button>
+                        <button class="btn btn-secondary" onclick="submitPrompt('regenerate')">↻ Regen</button>
+                    </div>
                 </div>
             </div>
 
@@ -4597,6 +4614,20 @@ public static class PlatinumForgeServer
                             refreshTree();
                         }
                     } catch {}
+                }
+
+                // ── Chat Flyout ──
+                let chatFlyoutOpen = false;
+
+                function toggleChatFlyout() {
+                    chatFlyoutOpen = !chatFlyoutOpen;
+                    document.getElementById('chat-flyout').style.display = chatFlyoutOpen ? 'flex' : 'none';
+                    document.getElementById('chat-overlay').style.display = chatFlyoutOpen ? 'block' : 'none';
+                    if (chatFlyoutOpen) {
+                        const el = document.getElementById('chat');
+                        el.scrollTop = el.scrollHeight;
+                        document.getElementById('prompt-input').focus();
+                    }
                 }
 
                 // ── Sessions ──
