@@ -26,6 +26,14 @@ using Microsoft.CodeAnalysis.Emit;
 
 // ── SystemState ──────────────────────────────
 
+public class ValidationFailure
+{
+    public string Stage { get; set; } = "";
+    public string Type { get; set; } = ""; // compilation, testExecution, constraintVerification, architectureConformance
+    public string? ConstraintId { get; set; }
+    public string Message { get; set; } = "";
+}
+
 public class SystemState
 {
     // Project metadata
@@ -39,11 +47,27 @@ public class SystemState
     // 2. Expansion
     public Dictionary<string, string> Interpretations { get; set; } = new();
     public Dictionary<string, string> Personas { get; set; } = new();
+    // Persona lineage: maps exploratory persona key → formalized ConstraintForge persona key
+    public Dictionary<string, string> PersonaLineage { get; set; } = new();
 
     // 3. ConstraintForge (single source of truth for ALL constraints)
     public Dictionary<string, string> Rules { get; set; } = new();
     public Dictionary<string, string> Invariants { get; set; } = new();
     public Dictionary<string, string> NFR { get; set; } = new();
+    // Constraint registry — auto-assigned IDs (C001, C002, ...) mapping to canonical constraint definitions
+    // Each entry: "C001" → "constraint-type:key" (e.g. "rule:no-sql-injection", "invariant:data-consistency")
+    public Dictionary<string, string> ConstraintRegistry { get; set; } = new();
+    private int _nextConstraintId = 1;
+    public string RegisterConstraint(string type, string key)
+    {
+        // Check if already registered
+        var canonical = $"{type}:{key}";
+        var existing = ConstraintRegistry.FirstOrDefault(kv => kv.Value == canonical);
+        if (existing.Key != null) return existing.Key;
+        var id = $"C{_nextConstraintId++:D3}";
+        ConstraintRegistry[id] = canonical;
+        return id;
+    }
     public Dictionary<string, int> Sliders { get; set; } = DefaultSliders();
 
     public static Dictionary<string, int> DefaultSliders() => new()
@@ -66,6 +90,8 @@ public class SystemState
     public Dictionary<string, string> Features { get; set; } = new();
     public Dictionary<string, string> Stories { get; set; } = new();
     public Dictionary<string, string> AcceptanceCriteria { get; set; } = new();
+    // Constraint references: acceptance criteria key → list of constraint IDs it validates
+    public Dictionary<string, List<string>> AcceptanceCriteriaConstraints { get; set; } = new();
 
     // 5. ShapeForge
     public Dictionary<string, string> Architecture { get; set; } = new();
@@ -73,12 +99,16 @@ public class SystemState
     public Dictionary<string, string> FrameworksAndTools { get; set; } = new();
     public Dictionary<string, string> Language { get; set; } = new();
     public Dictionary<string, string> DeploymentModel { get; set; } = new();
+    // Architecture decision traceability: architecture key → list of constraint IDs it satisfies
+    public Dictionary<string, List<string>> ArchitectureConstraints { get; set; } = new();
 
     // 6. BuildForge (tests generated BEFORE code)
     public Dictionary<string, string> UnitTests { get; set; } = new();
     public Dictionary<string, string> IntegrationTests { get; set; } = new();
     public Dictionary<string, string> E2eTests { get; set; } = new();
     public Dictionary<string, string> SoakTests { get; set; } = new();
+    // Test-to-constraint traceability: test key → list of constraint IDs it proves
+    public Dictionary<string, List<string>> TestConstraints { get; set; } = new();
 
     // 7. GenerateForge
     public Dictionary<string, string> FileManifest { get; set; } = new();
@@ -94,6 +124,8 @@ public class SystemState
         ["runCommand"] = "",
         ["healthCheckUrl"] = "",
     };
+    // Validation failures — structured output from Validate stage
+    public List<ValidationFailure> ValidationFailures { get; set; } = new();
 
     public SystemState Clone()
     {
@@ -126,6 +158,12 @@ public class SystemState
             Code = new(Code),
             ProjectFiles = new(ProjectFiles),
             BuildConfig = new(BuildConfig),
+            ConstraintRegistry = new(ConstraintRegistry),
+            PersonaLineage = new(PersonaLineage),
+            AcceptanceCriteriaConstraints = AcceptanceCriteriaConstraints.ToDictionary(kv => kv.Key, kv => new List<string>(kv.Value)),
+            ArchitectureConstraints = ArchitectureConstraints.ToDictionary(kv => kv.Key, kv => new List<string>(kv.Value)),
+            TestConstraints = TestConstraints.ToDictionary(kv => kv.Key, kv => new List<string>(kv.Value)),
+            ValidationFailures = ValidationFailures.Select(f => new ValidationFailure { Stage = f.Stage, Type = f.Type, ConstraintId = f.ConstraintId, Message = f.Message }).ToList(),
         };
     }
 }
@@ -490,6 +528,15 @@ public static class Generator
                                   "Strict layering — separate Domain, Application, Infrastructure, Presentation layers. No cross-layer leakage.");
         Guidance("solid",         "Pragmatic — SOLID principles are guidelines, not rules. Inline logic is fine.",
                                   "Strict SOLID — Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion must all be followed.");
+        if (state.ConstraintRegistry.Count > 0)
+        {
+            var constraintRegistryJson = JsonSerializer.Serialize(state.ConstraintRegistry);
+            sb.AppendLine();
+            sb.AppendLine("CONSTRAINT TRACEABILITY:");
+            sb.AppendLine("When generating acceptance criteria, architecture decisions, or tests, include constraint references.");
+            sb.AppendLine("Format: reference relevant constraint IDs from the constraint registry where applicable.");
+            sb.AppendLine($"Constraint Registry: {constraintRegistryJson}");
+        }
         return sb.ToString();
     }
 
@@ -1748,6 +1795,12 @@ public static class PlatinumForgeServer
                 ["code"] = state.Code,
                 ["projectFiles"] = state.ProjectFiles,
                 ["buildConfig"] = state.BuildConfig,
+                ["constraintRegistry"] = state.ConstraintRegistry,
+                ["personaLineage"] = state.PersonaLineage,
+                ["acceptanceCriteriaConstraints"] = state.AcceptanceCriteriaConstraints,
+                ["architectureConstraints"] = state.ArchitectureConstraints,
+                ["testConstraints"] = state.TestConstraints,
+                ["validationFailures"] = state.ValidationFailures,
                 ["committedAt"] = DateTime.UtcNow.ToString("o"),
             };
             File.WriteAllText(file, JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true }));
@@ -1798,6 +1851,22 @@ public static class PlatinumForgeServer
                 if (root.TryGetProperty("code", out var c)) s.Code = JsonToDict(c);
                 if (root.TryGetProperty("projectFiles", out var pf)) s.ProjectFiles = JsonToDict(pf);
                 if (root.TryGetProperty("buildConfig", out var bc)) s.BuildConfig = JsonToDict(bc);
+                if (root.TryGetProperty("constraintRegistry", out var cr)) s.ConstraintRegistry = JsonToDict(cr);
+                if (root.TryGetProperty("personaLineage", out var pl)) s.PersonaLineage = JsonToDict(pl);
+                if (root.TryGetProperty("acceptanceCriteriaConstraints", out var acc)) s.AcceptanceCriteriaConstraints = JsonToListDict(acc);
+                if (root.TryGetProperty("architectureConstraints", out var arc)) s.ArchitectureConstraints = JsonToListDict(arc);
+                if (root.TryGetProperty("testConstraints", out var tc)) s.TestConstraints = JsonToListDict(tc);
+                if (root.TryGetProperty("validationFailures", out var vf)) {
+                    s.ValidationFailures = new();
+                    foreach (var item in vf.EnumerateArray()) {
+                        s.ValidationFailures.Add(new ValidationFailure {
+                            Stage = item.GetProperty("stage").GetString() ?? "",
+                            Type = item.GetProperty("type").GetString() ?? "",
+                            ConstraintId = item.TryGetProperty("constraintId", out var cid) ? cid.GetString() : null,
+                            Message = item.GetProperty("message").GetString() ?? "",
+                        });
+                    }
+                }
                 return s;
             }
             catch { return null; }
@@ -1838,6 +1907,23 @@ public static class PlatinumForgeServer
             foreach (var prop in el.EnumerateObject())
                 d[prop.Name] = prop.Value.ValueKind == JsonValueKind.True;
             return d;
+        }
+
+        private static Dictionary<string, List<string>> JsonToListDict(JsonElement el)
+        {
+            var dict = new Dictionary<string, List<string>>();
+            if (el.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in el.EnumerateObject())
+                {
+                    var list = new List<string>();
+                    if (prop.Value.ValueKind == JsonValueKind.Array)
+                        foreach (var item in prop.Value.EnumerateArray())
+                            list.Add(item.GetString() ?? "");
+                    dict[prop.Name] = list;
+                }
+            }
+            return dict;
         }
     }
 
@@ -2119,6 +2205,12 @@ public static class PlatinumForgeServer
                         code = live.State.Code,
                         projectFiles = live.State.ProjectFiles,
                         buildConfig = live.State.BuildConfig,
+                        constraintRegistry = live.State.ConstraintRegistry,
+                        personaLineage = live.State.PersonaLineage,
+                        acceptanceCriteriaConstraints = live.State.AcceptanceCriteriaConstraints,
+                        architectureConstraints = live.State.ArchitectureConstraints,
+                        testConstraints = live.State.TestConstraints,
+                        validationFailures = live.State.ValidationFailures,
                     },
                     code = live.CurrentSource,
                     generating = live.Generating,
@@ -2194,6 +2286,12 @@ public static class PlatinumForgeServer
                     code = live.State.Code,
                     projectFiles = live.State.ProjectFiles,
                     buildConfig = live.State.BuildConfig,
+                    constraintRegistry = live.State.ConstraintRegistry,
+                    personaLineage = live.State.PersonaLineage,
+                    acceptanceCriteriaConstraints = live.State.AcceptanceCriteriaConstraints,
+                    architectureConstraints = live.State.ArchitectureConstraints,
+                    testConstraints = live.State.TestConstraints,
+                    validationFailures = live.State.ValidationFailures,
                 });
             }
             else if (path == "/api/state" && method == "POST")
@@ -2225,12 +2323,27 @@ public static class PlatinumForgeServer
                 if (root.TryGetProperty("projectFiles", out var pfl)) { live.State.ProjectFiles = JsonToDict(pfl); delta["projectFiles"] = live.State.ProjectFiles; }
                 if (root.TryGetProperty("buildConfig", out var bcfg)) { live.State.BuildConfig = JsonToDict(bcfg); delta["buildConfig"] = live.State.BuildConfig; }
                 if (root.TryGetProperty("fileManifest", out var fmn)) { live.State.FileManifest = JsonToDict(fmn); delta["fileManifest"] = live.State.FileManifest; }
+                if (root.TryGetProperty("constraintRegistry", out var creg)) { live.State.ConstraintRegistry = JsonToDict(creg); delta["constraintRegistry"] = live.State.ConstraintRegistry; }
+                if (root.TryGetProperty("personaLineage", out var plin)) { live.State.PersonaLineage = JsonToDict(plin); delta["personaLineage"] = live.State.PersonaLineage; }
+                if (root.TryGetProperty("acceptanceCriteriaConstraints", out var accC)) { live.State.AcceptanceCriteriaConstraints = JsonToListDict(accC); delta["acceptanceCriteriaConstraints"] = live.State.AcceptanceCriteriaConstraints; }
+                if (root.TryGetProperty("architectureConstraints", out var arcC)) { live.State.ArchitectureConstraints = JsonToListDict(arcC); delta["architectureConstraints"] = live.State.ArchitectureConstraints; }
+                if (root.TryGetProperty("testConstraints", out var tcC)) { live.State.TestConstraints = JsonToListDict(tcC); delta["testConstraints"] = live.State.TestConstraints; }
                 live.AddChat("system", "🔧 Constraints updated");
                 _ = live.Broadcast("state", delta, clientId);
                 _ = live.Broadcast("chat", new { role = "system", message = "🔧 Constraints updated" }, clientId);
                 // Auto-save to disk
                 if (meta != null) meta.CommitState(live.SessionId, live.State);
                 body = JsonSerializer.Serialize(new { ok = true });
+            }
+            else if (path == "/api/constraints/register" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var type = doc.RootElement.GetProperty("type").GetString() ?? "";
+                var key = doc.RootElement.GetProperty("key").GetString() ?? "";
+                var id = live.State.RegisterConstraint(type, key);
+                if (meta != null) meta.CommitState(live.SessionId, live.State);
+                body = JsonSerializer.Serialize(new { ok = true, constraintId = id });
             }
             else if (path == "/api/prompt" && method == "POST")
             {
@@ -2325,6 +2438,11 @@ public static class PlatinumForgeServer
                             fileManifest = live.State.FileManifest, interfaces = live.State.Interfaces,
                             code = live.State.Code,
                             projectFiles = live.State.ProjectFiles, buildConfig = live.State.BuildConfig,
+                            constraintRegistry = live.State.ConstraintRegistry, personaLineage = live.State.PersonaLineage,
+                            acceptanceCriteriaConstraints = live.State.AcceptanceCriteriaConstraints,
+                            architectureConstraints = live.State.ArchitectureConstraints,
+                            testConstraints = live.State.TestConstraints,
+                            validationFailures = live.State.ValidationFailures,
                         },
                         code = live.CurrentSource, generating = live.Generating,
                     }, clientId);
@@ -2364,6 +2482,11 @@ public static class PlatinumForgeServer
                             frameworksAndTools = live.State.FrameworksAndTools, language = live.State.Language,
                             deploymentModel = live.State.DeploymentModel,
                             projectFiles = live.State.ProjectFiles, buildConfig = live.State.BuildConfig,
+                            constraintRegistry = live.State.ConstraintRegistry, personaLineage = live.State.PersonaLineage,
+                            acceptanceCriteriaConstraints = live.State.AcceptanceCriteriaConstraints,
+                            architectureConstraints = live.State.ArchitectureConstraints,
+                            testConstraints = live.State.TestConstraints,
+                            validationFailures = live.State.ValidationFailures,
                             fileManifest = live.State.FileManifest,
                             generatedInterfaces = live.State.Interfaces.Keys.ToList(),
                             generatedCode = live.State.Code.Keys.ToList(),
@@ -3045,6 +3168,23 @@ public static class PlatinumForgeServer
         return d;
     }
 
+    private static Dictionary<string, List<string>> JsonToListDict(JsonElement el)
+    {
+        var dict = new Dictionary<string, List<string>>();
+        if (el.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in el.EnumerateObject())
+            {
+                var list = new List<string>();
+                if (prop.Value.ValueKind == JsonValueKind.Array)
+                    foreach (var item in prop.Value.EnumerateArray())
+                        list.Add(item.GetString() ?? "");
+                dict[prop.Name] = list;
+            }
+        }
+        return dict;
+    }
+
     private static void SetAuthCookie(HttpListenerResponse resp, string sub)
     {
         var value = AuthManager.CreateAuthCookie(sub);
@@ -3138,10 +3278,18 @@ public static class PlatinumForgeServer
             case "validate":
             {
                 await BroadcastProgress(live, 7, 8, "Validate", "running", "Compiling and testing...");
+                live.State.ValidationFailures.Clear();
+                
+                // 1. Compilation via Roslyn
                 var passed = await RunRetryLoop(live);
-                if (passed)
+                if (!passed)
                 {
-                    await BroadcastChat(live, "system", "✅ Roslyn compilation + unit tests passed");
+                    live.State.ValidationFailures.Add(new ValidationFailure { Stage = "validate", Type = "compilation", Message = "Roslyn compilation or unit tests failed after retries" });
+                }
+                
+                // 2. Project build
+                if (passed && live.State.ProjectFiles.Count > 0)
+                {
                     var projectDir = Path.Combine(Path.GetTempPath(), $"platinumforge-project-{Guid.NewGuid():N}");
                     Directory.CreateDirectory(projectDir);
                     foreach (var (name, content) in live.State.ProjectFiles)
@@ -3170,25 +3318,63 @@ public static class PlatinumForgeServer
                         var (buildExit, buildOut, buildErr) = await RunShellCommand(buildCmd, projectDir, 300);
                         if (buildExit != 0)
                         {
+                            live.State.ValidationFailures.Add(new ValidationFailure { Stage = "validate", Type = "compilation", Message = $"dotnet build failed (exit {buildExit}): {buildErr}" });
                             await BroadcastChat(live, "error", $"❌ Build failed (exit {buildExit}):\n{buildErr}\n{buildOut}");
-                            await BroadcastProgress(live, 7, 8, "Validate", "fail", "Build failed");
                         }
                         else
                         {
                             await BroadcastChat(live, "success", "✅ Project build succeeded");
-                            await BroadcastProgress(live, 7, 8, "Validate", "done", "All validations passed");
                         }
-                    }
-                    else
-                    {
-                        await BroadcastProgress(live, 7, 8, "Validate", "done", "Roslyn tests passed");
                     }
                     try { Directory.Delete(projectDir, true); } catch { }
                 }
+                
+                // 3. Constraint verification — check that all registered constraints have at least one test
+                foreach (var (cid, canonical) in live.State.ConstraintRegistry)
+                {
+                    var hasTest = live.State.TestConstraints.Values.Any(tests => tests.Contains(cid));
+                    var hasAcceptance = live.State.AcceptanceCriteriaConstraints.Values.Any(acs => acs.Contains(cid));
+                    if (!hasTest && !hasAcceptance)
+                    {
+                        live.State.ValidationFailures.Add(new ValidationFailure { 
+                            Stage = "validate", Type = "constraintVerification", ConstraintId = cid,
+                            Message = $"Constraint {cid} ({canonical}) has no test or acceptance criteria coverage"
+                        });
+                    }
+                }
+                
+                // 4. Architecture conformance — check that architecture decisions reference constraints
+                foreach (var (archKey, _) in live.State.Architecture)
+                {
+                    if (!live.State.ArchitectureConstraints.ContainsKey(archKey))
+                    {
+                        live.State.ValidationFailures.Add(new ValidationFailure {
+                            Stage = "validate", Type = "architectureConformance", 
+                            Message = $"Architecture decision '{archKey}' has no constraint traceability"
+                        });
+                    }
+                }
+                
+                var failures = live.State.ValidationFailures;
+                var criticalFailures = failures.Where(f => f.Type == "compilation" || f.Type == "testExecution").ToList();
+                if (criticalFailures.Any())
+                {
+                    await BroadcastProgress(live, 7, 8, "Validate", "fail", $"{criticalFailures.Count} critical failures");
+                    await BroadcastChat(live, "error", $"❌ Validation failed: {criticalFailures.Count} critical, {failures.Count - criticalFailures.Count} warnings");
+                }
+                else if (failures.Any())
+                {
+                    await BroadcastProgress(live, 7, 8, "Validate", "done", $"Passed with {failures.Count} warnings");
+                    await BroadcastChat(live, "system", $"⚠️ Validation passed with {failures.Count} traceability warnings");
+                }
                 else
                 {
-                    await BroadcastProgress(live, 7, 8, "Validate", "fail", "Tests failed");
+                    await BroadcastProgress(live, 7, 8, "Validate", "done", "All validations passed");
+                    await BroadcastChat(live, "success", "✅ All validations passed — full constraint traceability");
                 }
+                
+                // Broadcast validation results
+                _ = live.BroadcastAll("validation-results", new { failures = failures.Select(f => new { f.Stage, f.Type, f.ConstraintId, f.Message }) });
                 break;
             }
             case "ship":
@@ -3431,6 +3617,11 @@ public static class PlatinumForgeServer
                 e2eTests = live.State.E2eTests, soakTests = live.State.SoakTests,
                 fileManifest = live.State.FileManifest, interfaces = live.State.Interfaces,
                 code = live.State.Code, projectFiles = live.State.ProjectFiles, buildConfig = live.State.BuildConfig,
+                constraintRegistry = live.State.ConstraintRegistry, personaLineage = live.State.PersonaLineage,
+                acceptanceCriteriaConstraints = live.State.AcceptanceCriteriaConstraints,
+                architectureConstraints = live.State.ArchitectureConstraints,
+                testConstraints = live.State.TestConstraints,
+                validationFailures = live.State.ValidationFailures,
             });
         }
         catch (Exception ex)
@@ -4715,6 +4906,18 @@ public static class PlatinumForgeServer
                         appendChatEntry('system', vetoHtml);
                     });
 
+                    es.addEventListener('validation-results', e => {
+                        const d = JSON.parse(e.data);
+                        if (d.failures && d.failures.length > 0) {
+                            let msg = '📋 Validation Results:\n';
+                            d.failures.forEach(f => {
+                                const cid = f.constraintId ? ` [${f.constraintId}]` : '';
+                                msg += `  ${f.type}${cid}: ${f.message}\n`;
+                            });
+                            appendChatEntry('system', msg);
+                        }
+                    });
+
                     es.addEventListener('stage-complete', e => {
                         const d = JSON.parse(e.data);
                         if (d.status === 'vetoed') {
@@ -5244,7 +5447,7 @@ public static class PlatinumForgeServer
                 const WIZARD_STAGES = [
                     { key: 'seed', label: '🌱 Seed', title: 'What do you want to build?', subtitle: 'Enter your raw idea in one sentence.', fields: ['idea'] },
                     { key: 'expansion', label: '💡 Expansion', title: 'Expand your idea', subtitle: 'The council will interpret and expand your idea. Pick the best interpretation.', fields: ['interpretations', 'personas'] },
-                    { key: 'constraintForge', label: '⚖️ Constraints', title: 'Define ALL constraints', subtitle: 'The single source of truth for rules, invariants, NFRs, and quality.', fields: ['personas', 'rules', 'invariants', 'nfr'] },
+                    { key: 'constraintForge', label: '⚖️ Constraints', title: 'Define ALL constraints', subtitle: 'Single source of truth. Each constraint gets a unique ID (C001, C002...) for traceability.', fields: ['personas', 'rules', 'invariants', 'nfr'] },
                     { key: 'behaviourForge', label: '🎭 Behaviour', title: 'What must the system do?', subtitle: 'Features, user stories, and acceptance criteria.', fields: ['features', 'stories', 'acceptanceCriteria'] },
                     { key: 'shapeForge', label: '🏗️ Shape', title: 'How will the system exist?', subtitle: 'Architecture, frameworks, language, and deployment model.', fields: ['architecture', 'dataflow', 'frameworksAndTools', 'language', 'deploymentModel'] },
                     { key: 'buildForge', label: '🧪 Build', title: 'Proof before generation', subtitle: 'Tests are generated BEFORE code. They act as executable constraints.', fields: [] },
@@ -5381,10 +5584,22 @@ public static class PlatinumForgeServer
                             const m = AGENT_META[item.agent] || { icon: 'Ψ', name: item.agent, color: '#888' };
                             return `<span class="agent-badge" style="background:${m.color}22;color:${m.color};">${m.icon}</span>`;
                         })() : '';
+                        const constraintStages = ['rules', 'invariants', 'nfr'];
+                        const cReg = currentState.constraintRegistry || {};
+                        let cIdBadge = '';
+                        if (constraintStages.includes(field)) {
+                            const cEntry = Object.entries(cReg).find(([_, v]) => {
+                                const parts = v.split(':');
+                                return parts.length >= 2 && parts.slice(1).join(':') === item.key;
+                            });
+                            if (cEntry) {
+                                cIdBadge = `<span style="background:#2a1f3d;color:#bc8cff;font-size:9px;padding:1px 5px;border-radius:4px;margin-left:4px;">${cEntry[0]}</span>`;
+                            }
+                        }
                         const safeValue = item.value.replace(/'/g, "\\'").replace(/\n/g, ' ');
                         html += `<div class="suggest-item">`;
                         html += `<input type="checkbox" ${item.checked ? 'checked' : ''} onchange="toggleSuggestion('${field}', '${item.key}', '${safeValue}', this.checked)" />`;
-                        html += `<div><span class="suggest-key">${escHtml(item.key)}</span>${agentBadge}<br/><span class="suggest-value">${escHtml(item.value)}</span></div>`;
+                        html += `<div><span class="suggest-key">${escHtml(item.key)}</span>${cIdBadge}${agentBadge}<br/><span class="suggest-value">${escHtml(item.value)}</span></div>`;
                         html += `</div>`;
                     });
 
@@ -5403,6 +5618,22 @@ public static class PlatinumForgeServer
                     if (!wizardSelections[stage]) wizardSelections[stage] = {};
                     if (checked) {
                         wizardSelections[stage][key] = value;
+                        // Auto-register constraint for constraint stages
+                        const constraintStages = ['rules', 'invariants', 'nfr'];
+                        if (constraintStages.includes(stage)) {
+                            try {
+                                apiFetch('/api/constraints/register', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ type: stage, key })
+                                }).then(resp => resp.json()).then(data => {
+                                    if (data.ok) {
+                                        console.log('Registered constraint ' + data.constraintId + ' for ' + stage + ':' + key);
+                                        renderWizard();
+                                    }
+                                }).catch(e => console.error('Constraint registration failed:', e));
+                            } catch(e) { console.error('Constraint registration failed:', e); }
+                        }
                     } else {
                         delete wizardSelections[stage][key];
                     }
