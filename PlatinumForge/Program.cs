@@ -2177,16 +2177,22 @@ public static class PlatinumForgeServer
                     try
                     {
                         var stateJson = JsonSerializer.Serialize(new {
+                            projectName = live.State.ProjectName, version = live.State.Version,
                             description = live.State.Description, personas = live.State.Personas,
                             rules = live.State.Rules, invariants = live.State.Invariants,
                             architecture = live.State.Architecture, dataflow = live.State.Dataflow,
                             frameworks = live.State.Frameworks, language = live.State.Language,
                             deployment = live.State.Deployment,
                             features = live.State.Features, nfr = live.State.NFR, stories = live.State.Stories,
+                            sliders = live.State.Sliders,
                             codeTweaks = live.State.CodeTweaks, testTweaks = live.State.TestTweaks,
                             iac = live.State.IaC, deployTweaks = live.State.DeployTweaks, pipelineConfig = live.State.PipelineConfig,
                             architectureTweaks = live.State.ArchitectureTweaks,
-                        });
+                            fileManifest = live.State.FileManifest,
+                            generatedInterfaces = live.State.Interfaces.Keys.ToList(),
+                            generatedCode = live.State.Code.Keys.ToList(),
+                            generatedTests = live.State.UnitTests.Keys.ToList(),
+                        }, new JsonSerializerOptions { WriteIndented = true });
                         var chatHistory = string.Join("\n", live.ChatLog.TakeLast(20).Select(c => $"[{c.Role}] {c.Message}"));
                         var agentSystemPrompt = GetAgentSystemPrompt(agentName);
                         var response = await OpenAIClient.Complete(
@@ -2975,7 +2981,20 @@ public static class PlatinumForgeServer
 
     private const string AgentActionsPrompt =
         """
-        When you want to suggest a change to the project specification, include a JSON block in your response wrapped in ```actions ... ```.
+        You are operating over the METADATA DEFINITIONS of a software project — not the code itself.
+        The project state you receive is the full materialised specification that drives code generation.
+        
+        The metadata is structured in layers:
+        - Intent: description (what to build), personas (user roles/actors)
+        - Constraints: rules (hard rules), invariants (system invariants the compiler checks)
+        - Shape: architecture, dataflow, frameworks, language, deployment (tech decisions)
+        - Behaviour: features (capabilities), stories (user scenarios), nfr (non-functional requirements)
+        - Quality: sliders (0-100 dials for performance, security, readability, etc.)
+        - Finetune: codeTweaks, testTweaks, architectureTweaks, deployTweaks (micro-corrections)
+        - Pipeline: pipelineConfig (which generation stages are enabled)
+        - Generated: fileManifest (planned files), generatedInterfaces/Code/Tests (what exists)
+
+        When you want to suggest a change, include a JSON block in your response wrapped in ```actions ... ```.
         The JSON is an array of action objects:
         [
           {"label": "human-readable description", "layer": "rules", "op": "set", "key": "no-nulls", "value": "Public methods must never return null"},
@@ -2986,6 +3005,7 @@ public static class PlatinumForgeServer
         Layers: description, personas, rules, invariants, architecture, dataflow, frameworks, language,
         deployment, features, stories, nfr, codeTweaks, testTweaks, iac, deployTweaks, architectureTweaks.
         Your conversational text goes OUTSIDE the actions block. Always explain WHY you suggest each change.
+        Reference specific entries from the current state when discussing them.
         """;
 
     private static string GetAgentSystemPrompt(string agent) => agent switch
