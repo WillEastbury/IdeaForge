@@ -3181,7 +3181,7 @@ public static class PlatinumForgeServer
                     if (!string.IsNullOrWhiteSpace(installCmd))
                     {
                         await BroadcastChat(live, "system", $"📦 Running: {installCmd}");
-                        var (installExit, installOut, installErr) = await RunShellCommand(installCmd, projectDir, 120);
+                        var (installExit, installOut, installErr) = await RunShellCommand(installCmd, projectDir, 300);
                         if (installExit != 0)
                         {
                             await BroadcastChat(live, "error", $"❌ Install failed (exit {installExit}):\n{installErr}");
@@ -3198,7 +3198,7 @@ public static class PlatinumForgeServer
                     if (!string.IsNullOrWhiteSpace(buildCmd))
                     {
                         await BroadcastChat(live, "system", $"🔨 Running: {buildCmd}");
-                        var (buildExit, buildOut, buildErr) = await RunShellCommand(buildCmd, projectDir, 120);
+                        var (buildExit, buildOut, buildErr) = await RunShellCommand(buildCmd, projectDir, 300);
                         if (buildExit != 0)
                         {
                             await BroadcastChat(live, "error", $"❌ Build failed (exit {buildExit}):\n{buildErr}\n{buildOut}");
@@ -3233,7 +3233,7 @@ public static class PlatinumForgeServer
 
                         if (appProcess != null && !string.IsNullOrWhiteSpace(healthUrl))
                         {
-                            var healthy = await WaitForHealthCheck(healthUrl, TimeSpan.FromSeconds(30));
+                            var healthy = await WaitForHealthCheck(healthUrl, TimeSpan.FromSeconds(120));
                             if (healthy)
                             {
                                 await BroadcastChat(live, "success", $"✅ App is running and responding at {healthUrl}");
@@ -3241,7 +3241,7 @@ public static class PlatinumForgeServer
                             }
                             else
                             {
-                                await BroadcastChat(live, "error", $"⚠️ App started but health check at {healthUrl} timed out after 30s");
+                                await BroadcastChat(live, "error", $"⚠️ App started but health check at {healthUrl} timed out after 120s");
                                 await BroadcastProgress(live, 7, 11, "App Verify", "fail", "Health check timeout");
                             }
                         }
@@ -3374,7 +3374,7 @@ public static class PlatinumForgeServer
     }
 
     // Helper: run a shell command synchronously and capture output
-    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunShellCommand(string command, string workingDir, int timeoutSeconds = 120)
+    private static async Task<(int ExitCode, string Stdout, string Stderr)> RunShellCommand(string command, string workingDir, int timeoutSeconds = 300)
     {
         var parts = command.Split(' ', 2);
         var psi = new ProcessStartInfo(parts[0], parts.Length > 1 ? parts[1] : "")
@@ -3427,7 +3427,7 @@ public static class PlatinumForgeServer
     // Helper: poll a health check URL until it responds or times out
     private static async Task<bool> WaitForHealthCheck(string url, TimeSpan timeout)
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
@@ -3750,11 +3750,11 @@ public static class PlatinumForgeServer
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
 
-            var exited = proc.WaitForExit(120_000); // 2 min timeout
+            var exited = proc.WaitForExit(600_000); // 10 min timeout
             if (!exited)
             {
                 try { proc.Kill(entireProcessTree: true); } catch { }
-                await BroadcastChat(live, "error", $"⏱ {runner} timed out after 120s");
+                await BroadcastChat(live, "error", $"⏱ {runner} timed out after 600s");
             }
 
             var exitCode = exited ? proc.ExitCode : -1;
