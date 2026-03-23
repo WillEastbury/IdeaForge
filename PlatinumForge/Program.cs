@@ -2465,13 +2465,16 @@ public static class PlatinumForgeServer
     {
         live.Generating = true;
         _ = live.BroadcastAll("generating", new { generating = true });
+        var pipelineStart = DateTime.UtcNow;
         try
         {
             live.PushSnapshot("Before generation");
+            await BroadcastProgress(live, 0, 9, "Initialising", "running", "Preparing pipeline...");
             await BroadcastChat(live, "system", "⏳ Starting generation pipeline...");
 
             if (!string.IsNullOrWhiteSpace(prompt) && prompt != "generate" && prompt != "run")
             {
+                await BroadcastProgress(live, 0, 9, "Interpreting Prompt", "running", "Sending prompt to LLM...");
                 await BroadcastChat(live, "system", "💭 Interpreting prompt...");
                 var constraintJson = $"Rules: {JsonSerializer.Serialize(live.State.Rules)}\nArchitecture: {JsonSerializer.Serialize(live.State.Architecture)}\nNFR: {JsonSerializer.Serialize(live.State.NFR)}\nInvariants: {JsonSerializer.Serialize(live.State.Invariants)}";
                 var interpretation = await OpenAIClient.Complete(
@@ -2527,68 +2530,95 @@ public static class PlatinumForgeServer
             }
 
             // Stage 1: Interfaces
-            await BroadcastChat(live, "system", "⏳ [1/8] Generating Interfaces...");
+            await BroadcastProgress(live, 1, 9, "Interfaces", "running", "Generating interface definitions...");
+            await BroadcastChat(live, "system", "⏳ [1/9] Generating Interfaces...");
             live.State.Interfaces = await Generator.GenerateInterfaces(live.State);
+            await BroadcastProgress(live, 1, 9, "Interfaces", "done", $"{live.State.Interfaces.Count} files");
             await BroadcastChat(live, "system", "✅ Interfaces generated");
 
             // Stage 2: Unit Tests
-            await BroadcastChat(live, "system", "⏳ [2/8] Generating Unit Tests...");
+            await BroadcastProgress(live, 2, 9, "Unit Tests", "running", "Generating test cases...");
+            await BroadcastChat(live, "system", "⏳ [2/9] Generating Unit Tests...");
             live.State.UnitTests = await Generator.GenerateUnitTests(live.State);
+            await BroadcastProgress(live, 2, 9, "Unit Tests", "done", $"{live.State.UnitTests.Count} files");
             await BroadcastChat(live, "system", "✅ Unit Tests generated");
 
             // Stage 3: Code
-            await BroadcastChat(live, "system", "⏳ [3/8] Generating Code...");
+            await BroadcastProgress(live, 3, 9, "Code Generation", "running", "Implementing from interfaces + tests...");
+            await BroadcastChat(live, "system", "⏳ [3/9] Generating Code...");
             live.State.Code = await Generator.GenerateCode(live.State);
+            await BroadcastProgress(live, 3, 9, "Code Generation", "done", $"{live.State.Code.Count} files");
             await BroadcastChat(live, "system", "✅ Code generated");
 
             // Stage 4: Build + Unit Test retry loop
-            await BroadcastChat(live, "system", "⏳ [4/8] Build & Unit Test loop...");
+            await BroadcastProgress(live, 4, 9, "Build & Test", "running", "Compiling and running unit tests...");
+            await BroadcastChat(live, "system", "⏳ [4/9] Build & Unit Test loop...");
             var unitTestsPassed = await RunRetryLoop(live);
+            await BroadcastProgress(live, 4, 9, "Build & Test", unitTestsPassed ? "done" : "fail",
+                unitTestsPassed ? "All tests passing" : "Tests failed after retries");
 
             if (unitTestsPassed)
             {
                 // Stage 5: NFR Tests (Playwright)
+                await BroadcastProgress(live, 5, 9, "NFR Tests", "running", "Generating Playwright tests...");
                 await BroadcastChat(live, "system", "⏳ [5/9] Generating NFR Tests (Playwright)...");
                 live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
+                await BroadcastProgress(live, 5, 9, "NFR Tests", "done", "Generated");
                 await BroadcastChat(live, "system", "✅ NFR Tests generated");
                 await RunExternalTests(live, "nfr", "Playwright", live.State.NfrTests);
 
                 // Stage 6: Soak / Performance Tests (Locust)
+                await BroadcastProgress(live, 6, 9, "Soak Tests", "running", "Generating Locust load tests...");
                 await BroadcastChat(live, "system", "⏳ [6/9] Generating Soak Tests (Locust)...");
                 live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
+                await BroadcastProgress(live, 6, 9, "Soak Tests", "done", "Generated");
                 await BroadcastChat(live, "system", "✅ Soak Tests generated");
                 await RunExternalTests(live, "soak", "Locust", live.State.SoakTests);
 
                 // Stage 7: Integration Tests (Jest)
+                await BroadcastProgress(live, 7, 9, "Integration Tests", "running", "Generating Jest integration tests...");
                 await BroadcastChat(live, "system", "⏳ [7/9] Generating Integration Tests (Jest)...");
                 live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
+                await BroadcastProgress(live, 7, 9, "Integration Tests", "done", "Generated");
                 await BroadcastChat(live, "system", "✅ Integration Tests generated");
                 await RunExternalTests(live, "integration", "Jest", live.State.IntegrationTests);
 
                 // Stage 8: IaC Generation
                 if (live.State.Deployment.Count > 0 || live.State.IaC.Count > 0)
                 {
+                    await BroadcastProgress(live, 8, 9, "Infrastructure", "running", "Generating IaC artifacts...");
                     await BroadcastChat(live, "system", "⏳ [8/9] Generating Infrastructure as Code...");
                     live.State.IaC = await Generator.GenerateIaC(live.State);
+                    await BroadcastProgress(live, 8, 9, "Infrastructure", "done", $"{live.State.IaC.Count} files");
                     await BroadcastChat(live, "system", $"✅ IaC generated ({live.State.IaC.Count} files)");
+                }
+                else
+                {
+                    await BroadcastProgress(live, 8, 9, "Infrastructure", "done", "Skipped — no deployment config");
                 }
 
                 // Stage 9: Publish artifact
+                await BroadcastProgress(live, 9, 9, "Publish", "running", "Packaging artifact...");
                 await BroadcastChat(live, "system", "⏳ [9/9] Publishing artifact...");
                 var artifactPath = await PublishArtifact(live, userSub);
+                await BroadcastProgress(live, 9, 9, "Publish", "done", "Artifact ready");
                 await BroadcastChat(live, "success", $"📦 Artifact published: {artifactPath}");
             }
             else
             {
+                await BroadcastProgress(live, 4, 9, "Build & Test", "fail", "Pipeline halted");
                 await BroadcastChat(live, "error", "⚠️ Unit tests failed — skipping NFR/Soak/Integration/Publish stages");
             }
         }
         catch (Exception ex)
         {
+            await BroadcastProgress(live, 0, 9, "Error", "fail", ex.Message);
             await BroadcastChat(live, "error", $"❌ Generation failed: {ex.Message}");
         }
         finally
         {
+            var elapsed = (DateTime.UtcNow - pipelineStart).TotalSeconds;
+            await BroadcastProgress(live, 9, 9, "Complete", "complete", $"Total: {elapsed:F1}s");
             live.Generating = false;
             _ = live.BroadcastAll("generating", new { generating = false });
         }
@@ -2599,6 +2629,12 @@ public static class PlatinumForgeServer
     {
         live.AddChat(role, message);
         await live.BroadcastAll("chat", new { role, message });
+    }
+
+    // Helper: broadcast generation pipeline progress
+    private static async Task BroadcastProgress(LiveSession live, int stage, int total, string name, string status, string detail = "")
+    {
+        await live.BroadcastAll("progress", new { stage, total, name, status, detail });
     }
 
     private static void MergeDict(Dictionary<string, string> target, JsonElement el)
@@ -3092,9 +3128,23 @@ public static class PlatinumForgeServer
                 .pipeline-arrow:hover { background: #252d3a; color: var(--text); }
                 .pipeline-arrow.active { background: linear-gradient(135deg, #1e2a4a, #1a3560); color: var(--accent); text-shadow: 0 0 8px rgba(59,130,246,0.3); }
                 .pipeline-arrow.completed { background: linear-gradient(135deg, #0d2818, #132f1e); color: var(--green); }
+                .pipeline-arrow.running { background: linear-gradient(135deg, #1e2a4a, #1a3560); color: var(--accent); animation: pulse 1.5s infinite; }
+                .pipeline-arrow.running::after { content: ''; position: absolute; bottom: 0; left: 0; height: 3px; background: var(--accent); animation: progress-sweep 2s ease-in-out infinite; }
+                @keyframes progress-sweep { 0% { width: 0%; } 50% { width: 80%; } 100% { width: 100%; } }
+                .pipeline-arrow.stage-done { background: linear-gradient(135deg, #0d2818, #132f1e); color: var(--green); }
+                .pipeline-arrow.stage-fail { background: linear-gradient(135deg, #2d0d0d, #3d1515); color: #f85149; }
+                .pipeline-arrow .stage-time { font-size: 9px; opacity: 0.7; }
                 .pipeline-arrow .arrow-icon { font-size: 14px; }
                 .pipeline-arrow .arrow-badge { background: var(--accent); color: #000; font-size: 9px; padding: 1px 5px; border-radius: 6px; font-weight: 700; min-width: 16px; text-align: center; }
                 .pipeline-arrow.completed .arrow-badge { background: var(--green); }
+
+                /* Generation Progress Panel */
+                #gen-progress { display: none; background: linear-gradient(135deg, #0d1520, #111d2e); border-bottom: 1px solid var(--border); padding: 8px 16px; font-size: 12px; flex-shrink: 0; }
+                #gen-progress.active { display: flex; align-items: center; gap: 12px; }
+                #gen-progress .gen-stage-label { color: var(--accent); font-weight: 700; min-width: 200px; }
+                #gen-progress .gen-bar-wrap { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+                #gen-progress .gen-bar { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 3px; transition: width 0.3s ease; }
+                #gen-progress .gen-elapsed { color: var(--text-dim); font-size: 11px; min-width: 50px; text-align: right; font-family: 'Cascadia Code', monospace; }
 
                 /* Main Layout */
                 #main { display: flex; flex: 1; overflow: hidden; }
@@ -3277,6 +3327,7 @@ public static class PlatinumForgeServer
             </div>
 
             <div id="pipeline-nav"></div>
+            <div id="gen-progress"><span class="gen-stage-label" id="genStageLabel">Idle</span><div class="gen-bar-wrap"><div class="gen-bar" id="genBar" style="width:0%"></div></div><span class="gen-elapsed" id="genElapsed">0s</span></div>
 
             <div id="main">
                 <div id="left">
@@ -3450,6 +3501,11 @@ public static class PlatinumForgeServer
                         updateGeneratingUI(d.generating);
                     });
 
+                    es.addEventListener('progress', e => {
+                        const d = JSON.parse(e.data);
+                        updateProgress(d);
+                    });
+
                     es.addEventListener('ping', e => {
                         const d = JSON.parse(e.data);
                         if (d.clients) { clientCount = d.clients; updateClientsBadge(); }
@@ -3489,11 +3545,102 @@ public static class PlatinumForgeServer
                         dot.className = 'status-dot busy';
                         text.textContent = 'Generating...';
                         btn.disabled = true;
+                        genStartTime = Date.now();
+                        genTimerInterval = setInterval(updateGenTimer, 500);
                     } else {
                         dot.className = 'status-dot';
                         text.textContent = 'Ready';
                         btn.disabled = false;
+                        clearInterval(genTimerInterval);
+                        // Clear progress panel after a delay
+                        setTimeout(() => {
+                            const gp = document.getElementById('gen-progress');
+                            if (gp) gp.className = '';
+                            clearPipelineRunState();
+                        }, 5000);
                     }
+                }
+
+                let genStartTime = 0;
+                let genTimerInterval = null;
+                let genStageStartTime = 0;
+                const GEN_STAGES = ['Init', 'Interfaces', 'Unit Tests', 'Code', 'Build & Test', 'NFR Tests', 'Soak Tests', 'Integration', 'Infrastructure', 'Publish'];
+
+                function updateGenTimer() {
+                    const el = document.getElementById('genElapsed');
+                    if (el && genStartTime) {
+                        const s = ((Date.now() - genStartTime) / 1000).toFixed(0);
+                        el.textContent = s + 's';
+                    }
+                }
+
+                function updateProgress(d) {
+                    const gp = document.getElementById('gen-progress');
+                    const label = document.getElementById('genStageLabel');
+                    const bar = document.getElementById('genBar');
+
+                    if (d.status === 'complete') {
+                        gp.className = 'active';
+                        label.textContent = `✅ Pipeline complete — ${d.detail}`;
+                        bar.style.width = '100%';
+                        bar.style.background = 'linear-gradient(90deg, var(--green), #34d399)';
+                        return;
+                    }
+                    if (d.status === 'fail') {
+                        gp.className = 'active';
+                        label.textContent = `❌ ${d.name} — ${d.detail}`;
+                        bar.style.background = '#f85149';
+                        return;
+                    }
+
+                    gp.className = 'active';
+                    const pct = Math.round((d.stage / d.total) * 100);
+
+                    if (d.status === 'running') {
+                        label.innerHTML = `<span style="color:var(--accent)">⟳ ${d.name}</span> <span style="color:var(--text-dim);font-weight:400">${d.detail}</span>`;
+                        bar.style.width = Math.max(pct - 5, 2) + '%';
+                        bar.style.background = 'linear-gradient(90deg, var(--accent), var(--accent2))';
+                        genStageStartTime = Date.now();
+                    } else if (d.status === 'done') {
+                        const stageTime = genStageStartTime ? ((Date.now() - genStageStartTime) / 1000).toFixed(1) : '?';
+                        label.innerHTML = `<span style="color:var(--green)">✓ ${d.name}</span> <span style="color:var(--text-dim);font-weight:400">${d.detail} (${stageTime}s)</span>`;
+                        bar.style.width = pct + '%';
+                    }
+
+                    // Update pipeline chevrons with running/done state
+                    updatePipelineStageState(d);
+                }
+
+                function updatePipelineStageState(d) {
+                    const nav = document.getElementById('pipeline-nav');
+                    if (!nav) return;
+                    const arrows = nav.querySelectorAll('.pipeline-arrow');
+                    arrows.forEach(arrow => {
+                        const stages = (arrow.dataset.genStages || '').split(',').map(Number);
+                        if (!stages.length) return;
+                        const maxStage = Math.max(...stages);
+                        const minStage = Math.min(...stages);
+                        if (maxStage < d.stage) {
+                            // All gen stages for this chevron are done
+                            arrow.classList.remove('running');
+                            arrow.classList.add('stage-done');
+                        } else if (stages.includes(d.stage) && d.status === 'running') {
+                            arrow.classList.remove('stage-done', 'stage-fail');
+                            arrow.classList.add('running');
+                        } else if (stages.includes(d.stage) && d.status === 'done' && d.stage === maxStage) {
+                            arrow.classList.remove('running');
+                            arrow.classList.add('stage-done');
+                        } else if (stages.includes(d.stage) && d.status === 'fail') {
+                            arrow.classList.remove('running');
+                            arrow.classList.add('stage-fail');
+                        }
+                    });
+                }
+
+                function clearPipelineRunState() {
+                    document.querySelectorAll('.pipeline-arrow').forEach(a => {
+                        a.classList.remove('running', 'stage-done', 'stage-fail');
+                    });
                 }
 
                 function updateClientsBadge() {
@@ -3525,13 +3672,13 @@ public static class PlatinumForgeServer
                 }
 
                 const LAYER_GROUPS = [
-                    { name: 'Intent', icon: '💡', layers: ['description', 'personas'] },
-                    { name: 'Constraints', icon: '📏', layers: ['rules', 'invariants'] },
-                    { name: 'Shape', icon: '🏗️', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'] },
-                    { name: 'Behaviour', icon: '🎭', layers: ['features', 'stories', 'nfr'] },
-                    { name: 'Quality', icon: '🎚️', layers: [] }, // sliders, no constraint layers
-                    { name: 'Finetune', icon: '🔧', layers: ['architectureTweaks', 'codeTweaks', 'testTweaks'] },
-                    { name: 'Deploy', icon: '🚀', layers: ['iac', 'deployTweaks'] },
+                    { name: 'Intent', icon: '💡', layers: ['description', 'personas'], genStages: [0] },
+                    { name: 'Constraints', icon: '📏', layers: ['rules', 'invariants'], genStages: [1] },
+                    { name: 'Shape', icon: '🏗️', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'], genStages: [1,2,3] },
+                    { name: 'Behaviour', icon: '🎭', layers: ['features', 'stories', 'nfr'], genStages: [2,3] },
+                    { name: 'Quality', icon: '🎚️', layers: [], genStages: [4,5,6,7] },
+                    { name: 'Finetune', icon: '🔧', layers: ['architectureTweaks', 'codeTweaks', 'testTweaks'], genStages: [3,4] },
+                    { name: 'Deploy', icon: '🚀', layers: ['iac', 'deployTweaks'], genStages: [8,9] },
                 ];
                 const LAYERS = LAYER_GROUPS.flatMap(g => g.layers);
                 const LAYER_LABELS = {
@@ -3560,10 +3707,11 @@ public static class PlatinumForgeServer
                     nav.innerHTML = LAYER_GROUPS.map((g, i) => {
                         const count = stageItemCount(i);
                         const cls = i === activeStage ? 'active' : (count > 0 && i < activeStage ? 'completed' : '');
-                        return `<div class="pipeline-arrow ${cls}" onclick="setStage(${i})">
+                        return `<div class="pipeline-arrow ${cls}" data-gen-stages="${g.genStages.join(',')}" onclick="setStage(${i})">
                             <span class="arrow-icon">${g.icon}</span>
                             <span>${g.name}</span>
                             ${count > 0 ? `<span class="arrow-badge">${count}</span>` : ''}
+                            <span class="stage-time" data-stage-time="${i}"></span>
                         </div>`;
                     }).join('');
                 }
