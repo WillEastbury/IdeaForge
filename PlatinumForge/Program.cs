@@ -306,7 +306,7 @@ public static class CodeCompiler
         // Code implementations (skip Program.cs for compilation — it has Main)
         foreach (var (name, src) in state.Code)
         {
-            if (name.Equals("Program.cs", StringComparison.OrdinalIgnoreCase)) continue;
+            if (name.EndsWith("Program.cs", StringComparison.OrdinalIgnoreCase)) continue;
             sb.AppendLine($"// ── Code: {name}");
             sb.AppendLine(src);
             sb.AppendLine();
@@ -665,8 +665,12 @@ public static class Generator
             4. Include a Program.cs with Main method, DI registration, and HTTP pipeline setup
             5. Include any enums, models, DTOs, extension methods, middleware, and static helpers needed
 
-            Return a JSON object where each key is a filename (e.g. "Program.cs", "UserService.cs", "StringExtensions.cs")
-            and each value is the complete C# code for that file.
+            Return a JSON object where each key is a path-prefixed filename and each value is the complete C# code.
+            Use folder prefixes to organise files, for example:
+            "Startup/Program.cs", "Services/UserService.cs", "Controllers/UserController.cs",
+            "Models/UserDto.cs", "Enums/UserRole.cs", "Extensions/StringExtensions.cs",
+            "Middleware/AuthMiddleware.cs", "Data/AppDbContext.cs", "Config/AppSettings.cs",
+            "Validators/UserValidator.cs", "Helpers/CryptoHelper.cs"
 
             Do NOT include interface definitions (those are already generated).
             No using statements or namespace wrapper in individual files — the compiler adds those.
@@ -2597,29 +2601,86 @@ public static class PlatinumForgeServer
                         var parts = key.Replace('\\', '/').Split('/');
                         string folder;
                         if (parts.Length > 1)
-                            folder = "💻 " + parts[0];
-                        else if (key.Equals("Program.cs", StringComparison.OrdinalIgnoreCase))
-                            folder = "🚀 Startup";
-                        else if (key.Contains("Extension", StringComparison.OrdinalIgnoreCase))
-                            folder = "🔧 Extensions";
-                        else if (key.Contains("Enum", StringComparison.OrdinalIgnoreCase))
-                            folder = "📑 Enums";
-                        else if (key.Contains("Model", StringComparison.OrdinalIgnoreCase) || key.Contains("Dto", StringComparison.OrdinalIgnoreCase))
-                            folder = "📦 Models";
-                        else if (key.Contains("Controller", StringComparison.OrdinalIgnoreCase))
-                            folder = "🌐 Controllers";
-                        else if (key.Contains("Middleware", StringComparison.OrdinalIgnoreCase))
-                            folder = "🔗 Middleware";
-                        else if (key.Contains("Static", StringComparison.OrdinalIgnoreCase) || key.Contains("Helper", StringComparison.OrdinalIgnoreCase))
-                            folder = "⚡ Statics";
+                        {
+                            // LLM returned a path like "Controllers/HomeController.cs"
+                            folder = parts[0];
+                        }
                         else
-                            folder = "💻 Services";
+                        {
+                            // Flat filename — infer category
+                            var k = key;
+                            if (k.Equals("Program.cs", StringComparison.OrdinalIgnoreCase) ||
+                                k.Equals("Startup.cs", StringComparison.OrdinalIgnoreCase))
+                                folder = "Startup";
+                            else if (k.StartsWith("I") && k.Length > 1 && char.IsUpper(k[1]) && !k.Contains("mpl", StringComparison.OrdinalIgnoreCase))
+                                folder = "Interfaces";
+                            else if (k.Contains("Controller", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Endpoint", StringComparison.OrdinalIgnoreCase))
+                                folder = "Controllers";
+                            else if (k.Contains("Middleware", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Filter", StringComparison.OrdinalIgnoreCase))
+                                folder = "Middleware";
+                            else if (k.Contains("Extension", StringComparison.OrdinalIgnoreCase))
+                                folder = "Extensions";
+                            else if (k.Contains("Enum", StringComparison.OrdinalIgnoreCase))
+                                folder = "Enums";
+                            else if (k.Contains("Model", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Dto", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Entity", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Record", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Request", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Response", StringComparison.OrdinalIgnoreCase))
+                                folder = "Models";
+                            else if (k.Contains("Repository", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Repo", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("DataAccess", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("DbContext", StringComparison.OrdinalIgnoreCase))
+                                folder = "Data";
+                            else if (k.Contains("Config", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Setting", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Options", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("appsettings", StringComparison.OrdinalIgnoreCase))
+                                folder = "Config";
+                            else if (k.Contains("Validator", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Validation", StringComparison.OrdinalIgnoreCase))
+                                folder = "Validators";
+                            else if (k.Contains("Static", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Helper", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Utility", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Util", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Constants", StringComparison.OrdinalIgnoreCase))
+                                folder = "Helpers";
+                            else if (k.Contains("Mapper", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Profile", StringComparison.OrdinalIgnoreCase))
+                                folder = "Mapping";
+                            else if (k.Contains("Hub", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Signal", StringComparison.OrdinalIgnoreCase))
+                                folder = "Hubs";
+                            else if (k.Contains("Service", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Manager", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Provider", StringComparison.OrdinalIgnoreCase) ||
+                                     k.Contains("Handler", StringComparison.OrdinalIgnoreCase))
+                                folder = "Services";
+                            else
+                                folder = "Core";
+                        }
                         
                         if (!grouped.ContainsKey(folder)) grouped[folder] = new();
                         grouped[folder].Add(key);
                     }
+                    // Add emoji prefix and sort
+                    var folderIcons = new Dictionary<string, string> {
+                        ["Startup"] = "🚀", ["Interfaces"] = "🔌", ["Controllers"] = "🌐",
+                        ["Middleware"] = "🔗", ["Extensions"] = "🔧", ["Enums"] = "📑",
+                        ["Models"] = "📦", ["Data"] = "🗄️", ["Config"] = "⚙️",
+                        ["Validators"] = "✅", ["Helpers"] = "⚡", ["Mapping"] = "🔄",
+                        ["Hubs"] = "📡", ["Services"] = "💻", ["Core"] = "🧩",
+                    };
                     foreach (var (folder, files) in grouped.OrderBy(g => g.Key))
-                        tree[folder] = files;
+                    {
+                        var icon = folderIcons.GetValueOrDefault(folder, "📁");
+                        tree[$"{icon} {folder}"] = files;
+                    }
                 }
                 
                 // Tests
@@ -3403,15 +3464,11 @@ public static class PlatinumForgeServer
             }
             foreach (var (name, src) in live.State.Code)
             {
-                // Put Program.cs at root, others in appropriate folders
-                if (name.Equals("Program.cs", StringComparison.OrdinalIgnoreCase))
-                    File.WriteAllText(Path.Combine(srcDir, name), src);
-                else
-                {
-                    var dir = Path.Combine(srcDir, "Services");
-                    Directory.CreateDirectory(dir);
-                    File.WriteAllText(Path.Combine(dir, SanitizeFilename(name)), src);
-                }
+                // Respect path prefix from key (e.g. "Services/UserService.cs")
+                var safeName = SanitizeFilename(name.Replace('\\', '/'));
+                var filePath = Path.Combine(srcDir, safeName);
+                Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+                File.WriteAllText(filePath, src);
             }
             foreach (var (name, src) in live.State.UnitTests)
             {
