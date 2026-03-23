@@ -16,5 +16,8 @@ obj/
 .DS_Store
 Thumbs.db
 
+# Publish output
+publish/
+
 # PlatinumForge runtime data (sessions, builds, user data)
 .platinumforge/
