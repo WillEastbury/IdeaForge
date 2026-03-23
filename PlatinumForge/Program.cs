@@ -3272,9 +3272,11 @@ public static class PlatinumForgeServer
                 .constraint-header .badge { background: var(--accent); color: #000; font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 700; }
                 .constraint-body { padding: 8px; display: none; }
                 .constraint-body.open { display: block; }
-                .constraint-item { display: flex; gap: 6px; margin-bottom: 6px; }
+                .constraint-item { display: flex; gap: 6px; margin-bottom: 6px; align-items: flex-start; }
                 .constraint-item input { flex: 0 0 100px; background: var(--bg); border: 1px solid var(--border); color: var(--accent); padding: 4px 6px; border-radius: 3px; font-size: 12px; font-family: 'Cascadia Code', monospace; }
                 .constraint-item textarea { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; border-radius: 3px; font-size: 12px; resize: vertical; min-height: 28px; font-family: inherit; }
+                .constraint-item .btn-del { flex: 0 0 20px; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; padding: 2px 0; line-height: 1; opacity: 0.4; transition: all 0.15s; }
+                .constraint-item .btn-del:hover { color: #f85149; opacity: 1; }
                 .constraint-actions { padding: 4px 8px; display: flex; gap: 6px; }
                 .btn-sm { background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim); padding: 3px 10px; border-radius: 3px; font-size: 11px; cursor: pointer; }
                 .btn-sm:hover { color: var(--text); border-color: var(--accent); }
@@ -3430,6 +3432,8 @@ public static class PlatinumForgeServer
                 </div>
                 <div class="header-status">
                     <button class="btn" style="font-size:12px;" onclick="toggleBuildsFlyout()">📦 Builds</button>
+                    <button class="btn" style="font-size:12px;" onclick="exportDefinitions()">📤 Export</button>
+                    <button class="btn" style="font-size:12px;" onclick="importDefinitions()">📥 Import</button>
                     <button class="btn btn-sessions" id="sessionsBtn" onclick="toggleSessionFlyout()">🗂 <span id="sessionLabel">Session</span></button>
                     <button class="btn btn-commit" id="commitBtn" onclick="commitToDisk()">💾 Commit</button>
                     <span class="status-dot" id="statusDot"></span>
@@ -4172,6 +4176,7 @@ public static class PlatinumForgeServer
                                     <div class="constraint-actions">
                                         <button class="btn-sm save" onclick="saveStringLayer('${layer}')">💾 Save</button>
                                         <button class="btn-sm" onclick="enrichLayer('${layer}', true)" style="color:#a78bfa;">✨ Enrich</button>
+                                        <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
                                     </div>
                                 </div>
                             </div>`;
@@ -4189,11 +4194,13 @@ public static class PlatinumForgeServer
                                 ${entries.map(([k,v]) => `<div class="constraint-item">
                                     <input value="${escAttr(k)}" data-layer="${layer}" data-oldkey="${escAttr(k)}" />
                                     <textarea data-layer="${layer}" data-key="${escAttr(k)}">${escHtml(v)}</textarea>
+                                    <button class="btn-del" onclick="this.parentElement.remove()" title="Remove item">✕</button>
                                 </div>`).join('')}
                                 <div class="constraint-actions" style="position:relative;">
                                     <button class="btn-sm" onclick="addConstraint('${layer}')">+ Add</button>
                                     <button class="btn-sm save" onclick="saveConstraints('${layer}')">💾 Save</button>
                                     <button class="btn-sm" onclick="enrichLayer('${layer}')" style="color:#a78bfa;">✨ Enrich</button>
+                                    <button class="btn-sm" onclick="clearLayer('${layer}')" style="color:#f85149;">🗑️ Clear</button>
                                     ${PRESETS[layer] ? `<button class="btn-sm gallery" onclick="togglePresets('${layer}', this)">📋 Quick Fill</button>` : ''}
                                 </div>
                             </div>
@@ -4265,6 +4272,65 @@ public static class PlatinumForgeServer
                     } finally {
                         if (enrichBtn) { enrichBtn.textContent = origText; enrichBtn.disabled = false; }
                     }
+                }
+
+                async function clearLayer(layer) {
+                    if (!confirm(`Clear all items in this section?`)) return;
+                    if (STRING_LAYERS.includes(layer)) {
+                        currentState[layer] = '';
+                        const ta = document.getElementById('string-' + layer);
+                        if (ta) ta.value = '';
+                        await apiFetch('/api/state', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[layer]:''}) });
+                    } else {
+                        currentState[layer] = {};
+                        await apiFetch('/api/state', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({[layer]:{}}) });
+                    }
+                    renderConstraints();
+                }
+
+                function exportDefinitions() {
+                    const groups = ['Intent','Constraints','Shape','Behaviour'];
+                    const out = {};
+                    LAYER_GROUPS.forEach((g,i) => {
+                        if (i > 3) return;
+                        out[g.name] = {};
+                        g.layers.forEach(l => { out[g.name][l] = currentState[l] || (STRING_LAYERS.includes(l) ? '' : {}); });
+                    });
+                    const blob = new Blob([JSON.stringify(out, null, 2)], {type:'application/json'});
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    const proj = document.getElementById('project-name')?.value || 'platinumforge';
+                    a.download = proj.replace(/\s+/g,'-').toLowerCase() + '-definitions.json';
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                }
+
+                async function importDefinitions() {
+                    const input = document.createElement('input');
+                    input.type = 'file'; input.accept = '.json';
+                    input.onchange = async (e) => {
+                        const file = e.target.files[0];
+                        if (!file) return;
+                        try {
+                            const text = await file.text();
+                            const data = JSON.parse(text);
+                            const patch = {};
+                            Object.values(data).forEach(group => {
+                                if (typeof group === 'object' && group !== null) {
+                                    Object.entries(group).forEach(([layer, val]) => {
+                                        if (LAYERS.includes(layer)) {
+                                            currentState[layer] = val;
+                                            patch[layer] = val;
+                                        }
+                                    });
+                                }
+                            });
+                            await apiFetch('/api/state', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch) });
+                            renderConstraints();
+                            appendChatEntry('system', '📥 Definitions imported successfully');
+                        } catch(ex) { alert('Invalid JSON file: ' + ex.message); }
+                    };
+                    input.click();
                 }
 
                 function toggleSection(header) {
