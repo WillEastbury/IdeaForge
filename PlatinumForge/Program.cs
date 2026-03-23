@@ -2294,6 +2294,46 @@ public static class PlatinumForgeServer
                     body = JsonSerializer.Serialize(new { ok = true, message = "Generation started" });
                 }
             }
+            else if (path == "/api/pipeline/step" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var stage = doc.RootElement.GetProperty("stage").GetString() ?? "";
+                var validStages = new HashSet<string> { "manifest", "interfaces", "unitTests", "code", "build", "projectFiles", "projectBuild", "appVerify", "nfrTests", "soakTests", "integrationTests", "iac", "publish" };
+                if (!validStages.Contains(stage))
+                {
+                    body = JsonSerializer.Serialize(new { ok = false, error = $"Unknown stage: {stage}" });
+                }
+                else if (live.Generating)
+                {
+                    body = JsonSerializer.Serialize(new { ok = false, error = "Generation already in progress" });
+                }
+                else
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        live.Generating = true;
+                        _ = live.BroadcastAll("generating", new { generating = true });
+                        try
+                        {
+                            await RunSingleStage(live, stage, userSub);
+                            var (vetoed, reviews) = await RunCouncilReview(live, stage);
+                            var status = vetoed ? "vetoed" : "done";
+                            _ = live.BroadcastAll("stage-complete", new { stage, status, reviews = reviews.Select(r => new { agent = r.Agent, verdict = r.Verdict, message = r.Message }) });
+                        }
+                        catch (Exception ex)
+                        {
+                            await BroadcastChat(live, "error", $"❌ Stage '{stage}' failed: {ex.Message}");
+                        }
+                        finally
+                        {
+                            live.Generating = false;
+                            _ = live.BroadcastAll("generating", new { generating = false });
+                        }
+                    });
+                    body = JsonSerializer.Serialize(new { ok = true, message = $"Stage '{stage}' started" });
+                }
+            }
             else if (path == "/api/history" && method == "GET")
             {
                 body = JsonSerializer.Serialize(live.History.Select(h => new
@@ -3016,6 +3056,255 @@ public static class PlatinumForgeServer
     private static bool StageEnabled(LiveSession live, string stage) =>
         !live.State.PipelineConfig.TryGetValue(stage, out var v) || v;
 
+    // Run a single pipeline stage by name, broadcasting progress as usual.
+    private static async Task RunSingleStage(LiveSession live, string stage, string userSub = "local")
+    {
+        live.PushSnapshot($"Before stage: {stage}");
+        await BroadcastChat(live, "system", $"⏳ Running stage: {stage}...");
+
+        switch (stage)
+        {
+            case "manifest":
+                await BroadcastProgress(live, 0, 11, "Planning", "running", "Planning project file structure...");
+                live.State.FileManifest = await Generator.GenerateFileManifest(live.State);
+                await BroadcastProgress(live, 0, 11, "Planning", "done", $"{live.State.FileManifest.Count} files planned");
+                await BroadcastChat(live, "system", $"📋 File manifest: {live.State.FileManifest.Count} files planned");
+                break;
+            case "interfaces":
+                await BroadcastProgress(live, 1, 11, "Interfaces", "running", "Generating interface definitions...");
+                live.State.Interfaces = await Generator.GenerateInterfaces(live.State);
+                await BroadcastProgress(live, 1, 11, "Interfaces", "done", $"{live.State.Interfaces.Count} files");
+                await BroadcastChat(live, "system", "✅ Interfaces generated");
+                break;
+            case "unitTests":
+                await BroadcastProgress(live, 2, 11, "Unit Tests", "running", "Generating test cases...");
+                live.State.UnitTests = await Generator.GenerateUnitTests(live.State);
+                await BroadcastProgress(live, 2, 11, "Unit Tests", "done", $"{live.State.UnitTests.Count} files");
+                await BroadcastChat(live, "system", "✅ Unit Tests generated");
+                break;
+            case "code":
+                await BroadcastProgress(live, 3, 11, "Code Generation", "running", "Implementing from interfaces + tests...");
+                live.State.Code = await Generator.GenerateCode(live.State);
+                await BroadcastProgress(live, 3, 11, "Code Generation", "done", $"{live.State.Code.Count} files");
+                await BroadcastChat(live, "system", "✅ Code generated");
+                break;
+            case "build":
+                await BroadcastProgress(live, 4, 11, "Build & Test", "running", "Compiling and running unit tests...");
+                var unitTestsPassed = await RunRetryLoop(live);
+                await BroadcastProgress(live, 4, 11, "Build & Test", unitTestsPassed ? "done" : "fail",
+                    unitTestsPassed ? "All tests passing" : "Tests failed after retries");
+                break;
+            case "projectFiles":
+                await BroadcastProgress(live, 5, 11, "Project Files", "running", "Generating project/build files...");
+                var (projFiles, buildCfg) = await Generator.GenerateProjectFiles(live.State);
+                live.State.ProjectFiles = projFiles;
+                live.State.BuildConfig = buildCfg;
+                await BroadcastProgress(live, 5, 11, "Project Files", "done", $"{projFiles.Count} files");
+                await BroadcastChat(live, "system", $"✅ Project files generated: {string.Join(", ", projFiles.Keys)}");
+                break;
+            case "projectBuild":
+            {
+                await BroadcastProgress(live, 6, 11, "Project Build", "running", "Writing project & building...");
+                await BroadcastChat(live, "system", "⏳ Building project on disk...");
+                var projectDir = Path.Combine(Path.GetTempPath(), $"platinumforge-project-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(projectDir);
+                foreach (var (name, content) in live.State.ProjectFiles)
+                {
+                    var filePath = Path.Combine(projectDir, name);
+                    Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+                    File.WriteAllText(filePath, content);
+                }
+                foreach (var (name, src) in live.State.Interfaces)
+                {
+                    var dir = Path.Combine(projectDir, "Interfaces");
+                    Directory.CreateDirectory(dir);
+                    File.WriteAllText(Path.Combine(dir, SanitizeFilename(name)), src);
+                }
+                foreach (var (name, src) in live.State.Code)
+                {
+                    var safeName = SanitizeFilename(name.Replace('\\', '/'));
+                    var filePath = Path.Combine(projectDir, safeName);
+                    Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+                    File.WriteAllText(filePath, src);
+                }
+                var installCmd = live.State.BuildConfig.GetValueOrDefault("installCommand", "");
+                if (!string.IsNullOrWhiteSpace(installCmd))
+                {
+                    await BroadcastChat(live, "system", $"📦 Running: {installCmd}");
+                    var (installExit, _, installErr) = await RunShellCommand(installCmd, projectDir, 300);
+                    if (installExit != 0)
+                    {
+                        await BroadcastChat(live, "error", $"❌ Install failed (exit {installExit}):\n{installErr}");
+                        await BroadcastProgress(live, 6, 11, "Project Build", "fail", "Install failed");
+                    }
+                    else await BroadcastChat(live, "system", "✅ Dependencies installed");
+                }
+                var buildCmd = live.State.BuildConfig.GetValueOrDefault("buildCommand", "");
+                if (!string.IsNullOrWhiteSpace(buildCmd))
+                {
+                    await BroadcastChat(live, "system", $"🔨 Running: {buildCmd}");
+                    var (buildExit, buildOut, buildErr) = await RunShellCommand(buildCmd, projectDir, 300);
+                    if (buildExit != 0)
+                    {
+                        await BroadcastChat(live, "error", $"❌ Build failed (exit {buildExit}):\n{buildErr}\n{buildOut}");
+                        await BroadcastProgress(live, 6, 11, "Project Build", "fail", "Build failed");
+                    }
+                    else
+                    {
+                        await BroadcastChat(live, "success", "✅ Project built successfully");
+                        await BroadcastProgress(live, 6, 11, "Project Build", "done", "Build succeeded");
+                    }
+                }
+                else await BroadcastProgress(live, 6, 11, "Project Build", "done", "No build command");
+                try { Directory.Delete(projectDir, true); } catch { }
+                break;
+            }
+            case "appVerify":
+                await BroadcastProgress(live, 7, 11, "App Verify", "done", "Use full pipeline for app verification");
+                await BroadcastChat(live, "system", "ℹ️ App verification requires the full pipeline (project build context)");
+                break;
+            case "nfrTests":
+                await BroadcastProgress(live, 8, 11, "NFR Tests", "running", "Generating Playwright tests...");
+                live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
+                await BroadcastProgress(live, 8, 11, "NFR Tests", "done", $"Generated ({live.State.NfrTests.Count} files)");
+                await BroadcastChat(live, "system", "✅ NFR Tests generated");
+                break;
+            case "soakTests":
+                await BroadcastProgress(live, 9, 11, "Soak Tests", "running", "Generating Locust load tests...");
+                live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
+                await BroadcastProgress(live, 9, 11, "Soak Tests", "done", $"Generated ({live.State.SoakTests.Count} files)");
+                await BroadcastChat(live, "system", "✅ Soak Tests generated");
+                break;
+            case "integrationTests":
+                await BroadcastProgress(live, 10, 11, "Integration Tests", "running", "Generating Jest integration tests...");
+                live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
+                await BroadcastProgress(live, 10, 11, "Integration Tests", "done", $"Generated ({live.State.IntegrationTests.Count} files)");
+                await BroadcastChat(live, "system", "✅ Integration Tests generated");
+                break;
+            case "iac":
+                await BroadcastProgress(live, 10, 11, "Infrastructure", "running", "Generating IaC artifacts...");
+                live.State.IaC = await Generator.GenerateIaC(live.State);
+                await BroadcastProgress(live, 10, 11, "Infrastructure", "done", $"{live.State.IaC.Count} files");
+                await BroadcastChat(live, "system", $"✅ IaC generated ({live.State.IaC.Count} files)");
+                break;
+            case "publish":
+                await BroadcastProgress(live, 11, 11, "Publish", "running", "Packaging artifact...");
+                var artifactPath = await PublishArtifact(live, userSub);
+                await BroadcastProgress(live, 11, 11, "Publish", "done", "Artifact ready");
+                await BroadcastChat(live, "success", $"📦 Artifact published: {artifactPath}");
+                break;
+            default:
+                await BroadcastChat(live, "error", $"Unknown stage: {stage}");
+                break;
+        }
+    }
+
+    // Run a council review after a pipeline stage completes.
+    // All 6 agents review the stage output; a VETO from any agent pauses the pipeline.
+    private static readonly string[] CouncilAgents = { "psi", "apollo", "prometheus", "hephaestus", "themis", "hestia" };
+
+    private static string BuildStageOutputSummary(LiveSession live, string stage)
+    {
+        return stage switch
+        {
+            "manifest" => $"File manifest generated: {live.State.FileManifest.Count} files planned.\nFiles: {string.Join(", ", live.State.FileManifest.Keys.Take(20))}",
+            "interfaces" => $"Interfaces generated: {live.State.Interfaces.Count} files.\nFiles: {string.Join(", ", live.State.Interfaces.Keys.Take(20))}",
+            "unitTests" => $"Unit tests generated: {live.State.UnitTests.Count} files.\nFiles: {string.Join(", ", live.State.UnitTests.Keys.Take(20))}",
+            "code" => $"Code generated: {live.State.Code.Count} files.\nFiles: {string.Join(", ", live.State.Code.Keys.Take(20))}",
+            "build" => "Build & unit test retry loop completed.",
+            "projectFiles" => $"Project files generated: {live.State.ProjectFiles.Count} files.\nFiles: {string.Join(", ", live.State.ProjectFiles.Keys.Take(20))}",
+            "projectBuild" => "Project build completed on disk.",
+            "appVerify" => "Application verification completed.",
+            "nfrTests" => $"NFR tests generated: {live.State.NfrTests.Count} files.\nFiles: {string.Join(", ", live.State.NfrTests.Keys.Take(20))}",
+            "soakTests" => $"Soak tests generated: {live.State.SoakTests.Count} files.\nFiles: {string.Join(", ", live.State.SoakTests.Keys.Take(20))}",
+            "integrationTests" => $"Integration tests generated: {live.State.IntegrationTests.Count} files.\nFiles: {string.Join(", ", live.State.IntegrationTests.Keys.Take(20))}",
+            "iac" => $"IaC artifacts generated: {live.State.IaC.Count} files.\nFiles: {string.Join(", ", live.State.IaC.Keys.Take(20))}",
+            "publish" => "Artifact published.",
+            _ => "Stage completed."
+        };
+    }
+
+    private static string BuildStateContextSummary(LiveSession live)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Description entries: {live.State.Description.Count}");
+        sb.AppendLine($"Rules: {live.State.Rules.Count}, Invariants: {live.State.Invariants.Count}");
+        sb.AppendLine($"Architecture entries: {live.State.Architecture.Count}, Features: {live.State.Features.Count}");
+        sb.AppendLine($"NFR entries: {live.State.NFR.Count}, Stories: {live.State.Stories.Count}");
+        sb.AppendLine($"Interfaces: {live.State.Interfaces.Count}, Code files: {live.State.Code.Count}");
+        sb.AppendLine($"Unit tests: {live.State.UnitTests.Count}, NFR tests: {live.State.NfrTests.Count}");
+        sb.AppendLine($"Soak tests: {live.State.SoakTests.Count}, Integration tests: {live.State.IntegrationTests.Count}");
+        sb.AppendLine($"IaC files: {live.State.IaC.Count}, Project files: {live.State.ProjectFiles.Count}");
+        return sb.ToString();
+    }
+
+    private static async Task<(bool Vetoed, List<(string Agent, string Verdict, string Message)> Reviews)> RunCouncilReview(LiveSession live, string completedStage)
+    {
+        await BroadcastChat(live, "system", $"🏛️ Design Council reviewing stage: {completedStage}...");
+        var stageOutput = BuildStageOutputSummary(live, completedStage);
+        var stateContext = BuildStateContextSummary(live);
+        var reviews = new List<(string Agent, string Verdict, string Message)>();
+        bool vetoed = false;
+
+        foreach (var agent in CouncilAgents)
+        {
+            var persona = GetAgentSystemPrompt(agent);
+            var reviewPrompt = $"""
+                You are reviewing the output of pipeline stage "{completedStage}" for a software generation system.
+
+                Your role: {persona}
+
+                Stage output:
+                {stageOutput}
+
+                Current project state:
+                {stateContext}
+
+                Review this stage output. Respond with ONLY valid JSON:
+                {"{"}
+                  "verdict": "APPROVE" or "CONCERN" or "VETO",
+                  "message": "Your review feedback (1-2 sentences)"
+                {"}"}
+
+                APPROVE = output looks good, proceed to next stage
+                CONCERN = minor issues but OK to proceed (explain what)
+                VETO = critical problem, do NOT proceed (explain what must be fixed)
+
+                Only VETO for genuine blockers: missing critical requirements, contradictions with constraints, architectural violations.
+                """;
+
+            try
+            {
+                var response = await OpenAIClient.Complete(
+                    "You are a code review agent. Respond with ONLY valid JSON containing verdict and message fields.",
+                    reviewPrompt);
+                var stripped = Generator.StripMarkdownFences(response);
+                var doc = JsonDocument.Parse(stripped);
+                var verdict = doc.RootElement.GetProperty("verdict").GetString() ?? "APPROVE";
+                var message = doc.RootElement.GetProperty("message").GetString() ?? "";
+                reviews.Add((agent, verdict, message));
+
+                var emoji = verdict switch { "VETO" => "🚫", "CONCERN" => "⚠️", _ => "✅" };
+                await BroadcastChat(live, agent, $"{emoji} [{verdict}] {message}");
+
+                if (verdict == "VETO")
+                {
+                    vetoed = true;
+                    _ = live.BroadcastAll("pipeline-vetoed", new { stage = completedStage, agent, message });
+                }
+            }
+            catch (Exception ex)
+            {
+                reviews.Add((agent, "APPROVE", $"(review failed: {ex.Message})"));
+                await BroadcastChat(live, agent, $"⚠️ [REVIEW ERROR] {ex.Message}");
+            }
+        }
+
+        var summary = vetoed ? "🚫 Council VETOED — pipeline paused" : "✅ Council approved — proceeding";
+        await BroadcastChat(live, "system", $"🏛️ {summary}");
+        return (vetoed, reviews);
+    }
+
     private static async Task RunGeneration(LiveSession live, string prompt, string userSub = "local")
     {
         live.Generating = true;
@@ -3091,6 +3380,9 @@ public static class PlatinumForgeServer
             await BroadcastProgress(live, 0, 11, "Planning", "done", $"{live.State.FileManifest.Count} files planned");
             await BroadcastChat(live, "system", $"📋 File manifest: {live.State.FileManifest.Count} files planned");
 
+            // Council gate: manifest
+            { var (v, _) = await RunCouncilReview(live, "manifest"); if (v) { await BroadcastProgress(live, 0, 11, "Planning", "fail", "Vetoed by council"); return; } }
+
             // Stage 1: Interfaces
             if (StageEnabled(live, "interfaces")) {
                 await BroadcastProgress(live, 1, 11, "Interfaces", "running", "Generating interface definitions...");
@@ -3098,6 +3390,7 @@ public static class PlatinumForgeServer
                 live.State.Interfaces = await Generator.GenerateInterfaces(live.State);
                 await BroadcastProgress(live, 1, 11, "Interfaces", "done", $"{live.State.Interfaces.Count} files");
                 await BroadcastChat(live, "system", "✅ Interfaces generated");
+                { var (v, _) = await RunCouncilReview(live, "interfaces"); if (v) { await BroadcastProgress(live, 1, 11, "Interfaces", "fail", "Vetoed by council"); return; } }
             } else { await BroadcastProgress(live, 1, 11, "Interfaces", "done", "Skipped"); }
 
             // Stage 2: Unit Tests
@@ -3107,6 +3400,7 @@ public static class PlatinumForgeServer
                 live.State.UnitTests = await Generator.GenerateUnitTests(live.State);
                 await BroadcastProgress(live, 2, 11, "Unit Tests", "done", $"{live.State.UnitTests.Count} files");
                 await BroadcastChat(live, "system", "✅ Unit Tests generated");
+                { var (v, _) = await RunCouncilReview(live, "unitTests"); if (v) { await BroadcastProgress(live, 2, 11, "Unit Tests", "fail", "Vetoed by council"); return; } }
             } else { await BroadcastProgress(live, 2, 11, "Unit Tests", "done", "Skipped"); }
 
             // Stage 3: Code
@@ -3116,6 +3410,7 @@ public static class PlatinumForgeServer
                 live.State.Code = await Generator.GenerateCode(live.State);
                 await BroadcastProgress(live, 3, 11, "Code Generation", "done", $"{live.State.Code.Count} files");
                 await BroadcastChat(live, "system", "✅ Code generated");
+                { var (v, _) = await RunCouncilReview(live, "code"); if (v) { await BroadcastProgress(live, 3, 11, "Code Generation", "fail", "Vetoed by council"); return; } }
             } else { await BroadcastProgress(live, 3, 11, "Code Generation", "done", "Skipped"); }
 
             // Stage 4: Build + Unit Test retry loop
@@ -3126,6 +3421,7 @@ public static class PlatinumForgeServer
                 unitTestsPassed = await RunRetryLoop(live);
                 await BroadcastProgress(live, 4, 11, "Build & Test", unitTestsPassed ? "done" : "fail",
                     unitTestsPassed ? "All tests passing" : "Tests failed after retries");
+                if (unitTestsPassed) { var (v, _) = await RunCouncilReview(live, "build"); if (v) { await BroadcastProgress(live, 4, 11, "Build & Test", "fail", "Vetoed by council"); return; } }
             } else { await BroadcastProgress(live, 4, 11, "Build & Test", "done", "Skipped"); }
 
             if (unitTestsPassed)
@@ -3144,6 +3440,7 @@ public static class PlatinumForgeServer
                     live.State.BuildConfig = buildCfg;
                     await BroadcastProgress(live, 5, 11, "Project Files", "done", $"{projFiles.Count} files");
                     await BroadcastChat(live, "system", $"✅ Project files generated: {string.Join(", ", projFiles.Keys)}");
+                    { var (v, _) = await RunCouncilReview(live, "projectFiles"); if (v) { await BroadcastProgress(live, 5, 11, "Project Files", "fail", "Vetoed by council"); return; } }
 
                     // Stage 6: Write to disk + dotnet build (or equivalent)
                     await BroadcastProgress(live, 6, 11, "Project Build", "running", "Writing project & building...");
@@ -3218,6 +3515,7 @@ public static class PlatinumForgeServer
                     await BroadcastProgress(live, 5, 11, "Project Files", "done", "Skipped");
                     await BroadcastProgress(live, 6, 11, "Project Build", "done", "Skipped");
                 }
+                { var (v, _) = await RunCouncilReview(live, "projectBuild"); if (v) { await BroadcastProgress(live, 6, 11, "Project Build", "fail", "Vetoed by council"); return; } }
 
                 // Stage 7: App Verification — launch the app and verify it starts
                 if (StageEnabled(live, "appVerify") && projectDir != null) {
@@ -3267,6 +3565,7 @@ public static class PlatinumForgeServer
                 } else {
                     await BroadcastProgress(live, 7, 11, "App Verify", "done", "Skipped");
                 }
+                { var (v, _) = await RunCouncilReview(live, "appVerify"); if (v) { await BroadcastProgress(live, 7, 11, "App Verify", "fail", "Vetoed by council"); return; } }
 
                 }
                 finally
@@ -3287,6 +3586,7 @@ public static class PlatinumForgeServer
                     live.State.NfrTests = await Generator.GenerateNfrTests(live.State);
                     await BroadcastProgress(live, 8, 11, "NFR Tests", "done", $"Generated ({live.State.NfrTests.Count} files)");
                     await BroadcastChat(live, "system", "✅ NFR Tests generated");
+                    { var (v, _) = await RunCouncilReview(live, "nfrTests"); if (v) { await BroadcastProgress(live, 8, 11, "NFR Tests", "fail", "Vetoed by council"); return; } }
                 } else { await BroadcastProgress(live, 8, 11, "NFR Tests", "done", "Skipped"); }
 
                 // Stage 9: Soak / Performance Tests (Locust) — always generate
@@ -3296,6 +3596,7 @@ public static class PlatinumForgeServer
                     live.State.SoakTests = await Generator.GenerateSoakTests(live.State);
                     await BroadcastProgress(live, 9, 11, "Soak Tests", "done", $"Generated ({live.State.SoakTests.Count} files)");
                     await BroadcastChat(live, "system", "✅ Soak Tests generated");
+                    { var (v, _) = await RunCouncilReview(live, "soakTests"); if (v) { await BroadcastProgress(live, 9, 11, "Soak Tests", "fail", "Vetoed by council"); return; } }
                 } else { await BroadcastProgress(live, 9, 11, "Soak Tests", "done", "Skipped"); }
 
                 // Stage 10: Integration Tests (Jest) — always generate
@@ -3305,6 +3606,7 @@ public static class PlatinumForgeServer
                     live.State.IntegrationTests = await Generator.GenerateIntegrationTests(live.State);
                     await BroadcastProgress(live, 10, 11, "Integration Tests", "done", $"Generated ({live.State.IntegrationTests.Count} files)");
                     await BroadcastChat(live, "system", "✅ Integration Tests generated");
+                    { var (v, _) = await RunCouncilReview(live, "integrationTests"); if (v) { await BroadcastProgress(live, 10, 11, "Integration Tests", "fail", "Vetoed by council"); return; } }
                 } else { await BroadcastProgress(live, 10, 11, "Integration Tests", "done", "Skipped"); }
 
                 // Stage 10.5: IaC Generation (after app shutdown)
@@ -3315,6 +3617,7 @@ public static class PlatinumForgeServer
                     live.State.IaC = await Generator.GenerateIaC(live.State);
                     await BroadcastProgress(live, 10, 11, "Infrastructure", "done", $"{live.State.IaC.Count} files");
                     await BroadcastChat(live, "system", $"✅ IaC generated ({live.State.IaC.Count} files)");
+                    { var (v, _) = await RunCouncilReview(live, "iac"); if (v) { await BroadcastProgress(live, 10, 11, "Infrastructure", "fail", "Vetoed by council"); return; } }
                 }
                 else
                 {
@@ -3328,6 +3631,7 @@ public static class PlatinumForgeServer
                     var artifactPath = await PublishArtifact(live, userSub);
                     await BroadcastProgress(live, 11, 11, "Publish", "done", "Artifact ready");
                     await BroadcastChat(live, "success", $"📦 Artifact published: {artifactPath}");
+                    { var (v, _) = await RunCouncilReview(live, "publish"); if (v) { await BroadcastProgress(live, 11, 11, "Publish", "fail", "Vetoed by council"); return; } }
                 } else { await BroadcastProgress(live, 11, 11, "Publish", "done", "Skipped"); }
 
                 // Clean up project temp directory
@@ -4085,6 +4389,16 @@ public static class PlatinumForgeServer
                 .pipeline-arrow .arrow-icon { font-size: 14px; }
                 .pipeline-arrow .arrow-badge { background: var(--accent); color: #000; font-size: 9px; padding: 1px 5px; border-radius: 6px; font-weight: 700; min-width: 16px; text-align: center; }
                 .pipeline-arrow.completed .arrow-badge { background: var(--green); }
+                .stage-step-btn { display: none; background: transparent; border: 1px solid var(--accent); color: var(--accent); font-size: 10px; padding: 1px 4px; border-radius: 4px; cursor: pointer; margin-left: 4px; line-height: 1; transition: all 0.15s; }
+                .pipeline-arrow:hover .stage-step-btn { display: inline-block; }
+                .stage-step-btn:hover { background: var(--accent); color: #000; }
+                .veto-notification { background: linear-gradient(135deg, #2d1b1b, #3d1515); border: 1px solid #f85149; border-radius: 8px; padding: 12px; margin: 8px 0; }
+                .veto-header { color: #f85149; font-weight: 700; font-size: 14px; margin-bottom: 6px; }
+                .veto-message { color: var(--text); font-size: 13px; margin-bottom: 4px; }
+                .veto-stage { color: var(--text-dim); font-size: 11px; margin-bottom: 8px; }
+                .veto-actions { display: flex; gap: 8px; }
+                .veto-btn { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+                .veto-btn:hover { background: var(--accent); color: #000; }
 
                 /* Generation Progress Panel */
                 #gen-progress { display: none; background: linear-gradient(135deg, #0d1520, #111d2e); border-bottom: 1px solid var(--border); padding: 8px 16px; font-size: 12px; flex-shrink: 0; }
@@ -4515,6 +4829,28 @@ public static class PlatinumForgeServer
                         document.getElementById('pipeline-stats').style.display = 'flex';
                     });
 
+                    es.addEventListener('pipeline-vetoed', e => {
+                        const d = JSON.parse(e.data);
+                        const agentEmojis = { psi: 'Ψ', apollo: '☀️', prometheus: '🔥', hephaestus: '⚒️', themis: '⚖️', hestia: '🏠' };
+                        const emoji = agentEmojis[d.agent] || '';
+                        const vetoHtml = `<div class="veto-notification">
+                            <div class="veto-header">⚠️ PIPELINE VETOED by ${emoji} ${d.agent}</div>
+                            <div class="veto-message">${escHtml(d.message)}</div>
+                            <div class="veto-stage">Stage: ${escHtml(d.stage)}</div>
+                            <div class="veto-actions">
+                                <button class="veto-btn" onclick="runStage('${d.stage}')">🔄 Retry Stage</button>
+                            </div>
+                        </div>`;
+                        appendChatEntry('system', vetoHtml);
+                    });
+
+                    es.addEventListener('stage-complete', e => {
+                        const d = JSON.parse(e.data);
+                        if (d.status === 'vetoed') {
+                            appendChatEntry('system', `🚫 Stage "${d.stage}" was vetoed by the Design Council`);
+                        }
+                    });
+
                     es.onerror = () => { sseConnected = false; };
                     es.onopen = () => { sseConnected = true; };
                 }
@@ -4660,14 +4996,30 @@ public static class PlatinumForgeServer
                     return fetch(url, opts);
                 }
 
+                async function runStage(stage) {
+                    try {
+                        const r = await apiFetch('/api/pipeline/step', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({ stage })
+                        });
+                        const result = await r.json();
+                        if (!result.ok) {
+                            appendChatEntry('error', result.error || 'Stage failed to start');
+                        }
+                    } catch(ex) {
+                        appendChatEntry('error', 'Stage request failed: ' + ex.message);
+                    }
+                }
+
                 const LAYER_GROUPS = [
-                    { name: 'Intent', icon: '💡', layers: ['description', 'personas'], genStages: [0] },
-                    { name: 'Constraints', icon: '📏', layers: ['rules', 'invariants'], genStages: [1] },
-                    { name: 'Shape', icon: '🏗️', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'], genStages: [1,2,3] },
-                    { name: 'Behaviour', icon: '🎭', layers: ['features', 'stories', 'nfr'], genStages: [2,3] },
-                    { name: 'Quality', icon: '🎚️', layers: [], genStages: [4,5,6,7] },
-                    { name: 'Finetune', icon: '🔧', layers: ['architectureTweaks', 'codeTweaks', 'testTweaks'], genStages: [3,4] },
-                    { name: 'Deploy', icon: '🚀', layers: ['iac', 'deployTweaks'], genStages: [8,9] },
+                    { name: 'Intent', icon: '💡', stageKey: 'manifest', layers: ['description', 'personas'], genStages: [0] },
+                    { name: 'Constraints', icon: '📏', stageKey: 'interfaces', layers: ['rules', 'invariants'], genStages: [1] },
+                    { name: 'Shape', icon: '🏗️', stageKey: 'code', layers: ['architecture', 'dataflow', 'frameworks', 'language', 'deployment'], genStages: [1,2,3] },
+                    { name: 'Behaviour', icon: '🎭', stageKey: 'unitTests', layers: ['features', 'stories', 'nfr'], genStages: [2,3] },
+                    { name: 'Quality', icon: '🎚️', stageKey: 'build', layers: [], genStages: [4,5,6,7] },
+                    { name: 'Finetune', icon: '🔧', stageKey: 'nfrTests', layers: ['architectureTweaks', 'codeTweaks', 'testTweaks'], genStages: [3,4] },
+                    { name: 'Deploy', icon: '🚀', stageKey: 'iac', layers: ['iac', 'deployTweaks'], genStages: [8,9] },
                 ];
                 const LAYERS = LAYER_GROUPS.flatMap(g => g.layers);
                 const LAYER_LABELS = {
@@ -4696,11 +5048,13 @@ public static class PlatinumForgeServer
                     nav.innerHTML = LAYER_GROUPS.map((g, i) => {
                         const count = stageItemCount(i);
                         const cls = i === activeStage ? 'active' : (count > 0 && i < activeStage ? 'completed' : '');
+                        const stepBtn = g.stageKey ? `<button class="stage-step-btn" onclick="event.stopPropagation(); runStage('${g.stageKey}')" title="Run this stage">▶</button>` : '';
                         return `<div class="pipeline-arrow ${cls}" data-gen-stages="${g.genStages.join(',')}" onclick="setStage(${i})">
                             <span class="arrow-icon">${g.icon}</span>
                             <span>${g.name}</span>
                             ${count > 0 ? `<span class="arrow-badge">${count}</span>` : ''}
                             <span class="stage-time" data-stage-time="${i}"></span>
+                            ${stepBtn}
                         </div>`;
                     }).join('');
                 }
