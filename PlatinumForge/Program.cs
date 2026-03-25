@@ -4478,6 +4478,13 @@ public static class PlatinumForgeServer
                 .login-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(255,255,255,0.1); }
                 .login-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
                 .login-note { margin-top: 24px; font-size: 12px; color: #8b949e; }
+                @media (max-width: 480px) {
+                    body { height: 100vh; height: 100dvh; padding: 16px; }
+                    .login-card { padding: 32px 20px; }
+                    .logo-text { font-size: 24px; }
+                    .logo-icon svg { width: 56px; height: 56px; }
+                    .login-btn { padding: 10px 20px; font-size: 14px; }
+                }
             </style>
         </head>
         <body>
@@ -4781,6 +4788,96 @@ public static class PlatinumForgeServer
                 .share-dialog h3 { color: var(--purple); margin-bottom: 12px; font-size: 16px; }
                 .share-url { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 13px; font-family: 'Cascadia Code', monospace; }
                 .share-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+
+                /* Mobile bottom nav */
+                #mobile-nav { display: none; }
+
+                /* ── Mobile Responsive ────────────────────────── */
+                @media (max-width: 768px) {
+                    body { height: 100vh; height: 100dvh; overflow: hidden; }
+
+                    /* Header: wrap and shrink */
+                    #header { flex-wrap: wrap; padding: 8px 12px; gap: 8px; }
+                    .logo-text { font-size: 16px; }
+                    .logo-sub { display: none; }
+                    .logo-icon svg { width: 28px; height: 28px; }
+                    #header > div:nth-child(2) { order: 3; width: 100%; }
+                    #header > div:nth-child(2) input { flex: 1; width: auto !important; }
+                    .header-status { flex-wrap: wrap; gap: 4px; }
+                    .header-status .btn { font-size: 11px; padding: 4px 8px; }
+                    .user-area { margin-left: 0; }
+                    .user-name { display: none; }
+
+                    /* Pipeline nav: compact */
+                    #pipeline-nav { height: 36px; }
+                    .pipeline-arrow { font-size: 10px; padding: 0 8px 0 18px; }
+                    .pipeline-arrow .stage-time { display: none; }
+
+                    /* Gen progress */
+                    #gen-progress .gen-stage-label { min-width: 100px; font-size: 11px; }
+
+                    /* Main layout: stack vertically, show one panel at a time */
+                    #main { flex-direction: column; position: relative; }
+                    #left { width: 100% !important; min-width: 0 !important; border-right: none; flex: 1 1 auto; overflow-y: auto; }
+                    #right { flex: 1 1 auto; overflow: hidden; }
+                    #chat-panel { width: 100% !important; min-width: 0 !important; border-left: none; flex: 1 1 auto; position: absolute; inset: 0; z-index: 50; }
+                    #chat-panel.collapsed { display: none; }
+                    #chat-toggle-btn { display: none !important; }
+
+                    /* Mobile panel switching — only one visible at a time */
+                    #main.mobile-show-left #left { display: flex; }
+                    #main.mobile-show-left #right { display: none; }
+                    #main.mobile-show-left #chat-panel { display: none; }
+
+                    #main.mobile-show-editor #left { display: none; }
+                    #main.mobile-show-editor #right { display: flex; }
+                    #main.mobile-show-editor #chat-panel { display: none; }
+
+                    #main.mobile-show-chat #left { display: none; }
+                    #main.mobile-show-chat #right { display: none; }
+                    #main.mobile-show-chat #chat-panel { display: flex; position: relative; }
+
+                    /* Editor tabs: scrollable */
+                    #editor-header { padding: 6px 8px; gap: 6px; overflow-x: auto; flex-wrap: nowrap; }
+                    .tab { white-space: nowrap; padding: 4px 8px; font-size: 11px; }
+
+                    /* File tree overlay on mobile */
+                    #file-tree { position: absolute; left: 0; top: 0; bottom: 0; z-index: 20; width: 200px !important; min-width: 0 !important; }
+
+                    /* Flyouts: full width */
+                    #session-flyout { width: 100% !important; }
+                    #builds-flyout { width: 100% !important; }
+                    .share-dialog { width: 90% !important; max-width: 420px; }
+
+                    /* Wizard content */
+                    #wizard-content { padding: 10px; }
+                    .wizard-title { font-size: 16px; }
+                    #wizard-nav { padding: 8px; }
+                    #wizard-nav .btn { padding: 6px 10px; font-size: 12px; }
+
+                    /* Slider rows */
+                    .slider-row { flex-wrap: wrap; padding: 4px 8px; }
+                    .slider-row label { flex: 0 0 90px; }
+                    .slider-row .slider-lo, .slider-row .slider-hi { flex: 0 0 40px; font-size: 8px; }
+
+                    /* Constraint items */
+                    .constraint-item { flex-wrap: wrap; }
+                    .constraint-item input { flex: 1 1 80px; }
+
+                    /* Pipeline stats */
+                    #pipeline-stats { flex-wrap: wrap; gap: 4px; }
+                    #pipeline-stats span { margin-left: 0 !important; }
+
+                    /* Preset dropdown */
+                    .preset-dropdown { min-width: 200px; max-width: 90vw; }
+
+                    /* Mobile bottom nav bar */
+                    #mobile-nav { display: flex; flex-shrink: 0; background: var(--surface); border-top: 2px solid var(--border); }
+                    #mobile-nav button { flex: 1; background: none; border: none; color: var(--text-dim); padding: 10px 0; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; transition: all 0.15s; }
+                    #mobile-nav button .nav-icon { font-size: 18px; }
+                    #mobile-nav button.active { color: var(--accent); background: rgba(59,130,246,0.08); }
+                    #mobile-nav button:active { background: rgba(59,130,246,0.15); }
+                }
             </style>
         </head>
         <body>
@@ -4926,6 +5023,13 @@ public static class PlatinumForgeServer
                 <div id="builds-list" style="padding:8px;"></div>
             </div>
 
+            <!-- Mobile Bottom Nav -->
+            <nav id="mobile-nav">
+                <button class="active" onclick="mobileShowPanel('left', this)"><span class="nav-icon">📝</span>Design</button>
+                <button onclick="mobileShowPanel('editor', this)"><span class="nav-icon">💻</span>Code</button>
+                <button onclick="mobileShowPanel('chat', this)"><span class="nav-icon">🏛️</span>Council</button>
+            </nav>
+
             <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
             <script>
                 require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' }});
@@ -4946,12 +5050,43 @@ public static class PlatinumForgeServer
                         padding: { top: 12 },
                         renderLineHighlight: 'none',
                     });
-                    window.addEventListener('resize', () => editor.layout());
+                    window.addEventListener('resize', () => { editor.layout(); applyMobileLayout(); });
+                    applyMobileLayout();
                     initSSE();
                     pollLoop();
                 });
 
-                // ── SSE Connection ──
+                // ── Mobile Panel Switching ──
+                function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
+
+                function applyMobileLayout() {
+                    const main = document.getElementById('main');
+                    if (isMobile()) {
+                        if (!main.className.match(/mobile-show-/)) {
+                            main.classList.add('mobile-show-left');
+                        }
+                        // Ensure chat panel isn't in collapsed state when shown via mobile nav
+                        const chatPanel = document.getElementById('chat-panel');
+                        if (main.classList.contains('mobile-show-chat')) {
+                            chatPanel.classList.remove('collapsed');
+                        }
+                    } else {
+                        main.classList.remove('mobile-show-left', 'mobile-show-editor', 'mobile-show-chat');
+                    }
+                    if (typeof editor !== 'undefined' && editor) setTimeout(() => editor.layout(), 50);
+                }
+
+                function mobileShowPanel(panel, btn) {
+                    const main = document.getElementById('main');
+                    main.classList.remove('mobile-show-left', 'mobile-show-editor', 'mobile-show-chat');
+                    main.classList.add('mobile-show-' + panel);
+                    if (panel === 'chat') {
+                        document.getElementById('chat-panel').classList.remove('collapsed');
+                    }
+                    document.querySelectorAll('#mobile-nav button').forEach(b => b.classList.remove('active'));
+                    if (btn) btn.classList.add('active');
+                    if (typeof editor !== 'undefined' && editor) setTimeout(() => editor.layout(), 50);
+                }
                 let sseConnected = false;
                 let clientCount = 0;
 
