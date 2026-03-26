@@ -4518,11 +4518,23 @@ public static class PlatinumForgeServer
                     --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e;
                     --accent: #3b82f6; --accent2: #60a5fa; --green: #3fb950;
                     --red: #f85149; --blue: #58a6ff; --purple: #bc8cff;
+                    --header-bg: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+                    --panel-bg: #181825; --card-bg: #23233a; --card-border: #333;
+                    --input-bg: #1a1a2e; --input-border: #444; --input-text: #e0e0e0;
+                }
+                [data-theme="light"] {
+                    --bg: #f0f2f5; --surface: #ffffff; --surface2: #e8ecf1;
+                    --border: #d0d7de; --text: #1f2328; --text-dim: #656d76;
+                    --accent: #2563eb; --accent2: #3b82f6; --green: #1a7f37;
+                    --red: #cf222e; --blue: #0969da; --purple: #8250df;
+                    --header-bg: linear-gradient(135deg, #e8ecf1 0%, #dce3eb 50%, #c9d5e3 100%);
+                    --panel-bg: #f6f8fa; --card-bg: #e8ecf1; --card-border: #d0d7de;
+                    --input-bg: #f6f8fa; --input-border: #d0d7de; --input-text: #1f2328;
                 }
                 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
                 /* Logo/Header */
-                #header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); padding: 12px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 2px solid var(--accent); flex-shrink: 0; }
+                #header { background: var(--header-bg); padding: 12px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 2px solid var(--accent); flex-shrink: 0; }
                 .logo { display: flex; align-items: center; gap: 12px; }
                 .logo-icon { font-size: 32px; filter: drop-shadow(0 0 8px rgba(59,130,246,0.6)); }
                 .logo-icon svg { width: 36px; height: 36px; }
@@ -4598,31 +4610,31 @@ public static class PlatinumForgeServer
                 /* Wizard */
                 #wizard { display: flex; flex-direction: column; height: 100%; }
                 #wizard-steps { display: none; }
-                .wizard-step { padding: 4px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; background: #23233a; color: #aaa; border: 1px solid #333; transition: all 0.2s; }
+                .wizard-step { padding: 4px 10px; border-radius: 12px; font-size: 11px; cursor: pointer; background: var(--card-bg); color: #aaa; border: 1px solid var(--card-border); transition: all 0.2s; }
                 .wizard-step.active { background: #6c3baa; color: #fff; border-color: #9b59b6; }
                 .wizard-step.done { background: #1a3a2a; color: #3ecf8e; border-color: #2a5a3a; }
                 #wizard-content { flex: 1; overflow-y: auto; padding: 16px; }
-                #wizard-nav { display: flex; gap: 8px; padding: 12px; background: #181825; border-top: 1px solid #333; }
+                #wizard-nav { display: flex; gap: 8px; padding: 12px; background: var(--panel-bg); border-top: 1px solid var(--card-border); }
                 #wizard-nav .btn { flex: 1; }
-                .wizard-title { font-size: 18px; font-weight: 600; color: #e0e0e0; margin-bottom: 4px; }
-                .wizard-subtitle { font-size: 12px; color: #888; margin-bottom: 16px; }
-                .desc-option { background: #23233a; border: 2px solid #333; border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
+                .wizard-title { font-size: 18px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+                .wizard-subtitle { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; }
+                .desc-option { background: var(--card-bg); border: 2px solid var(--card-border); border-radius: 8px; padding: 12px; margin-bottom: 10px; cursor: pointer; transition: all 0.2s; }
                 .desc-option:hover { border-color: #6c3baa; }
                 .desc-option.selected { border-color: #9b59b6; background: #2a1f3d; }
                 .desc-option .agent-badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; margin-bottom: 6px; }
-                .desc-option p { color: #ccc; font-size: 13px; line-height: 1.5; margin: 0; }
-                .suggest-item { display: flex; align-items: flex-start; gap: 8px; background: #23233a; border: 1px solid #333; border-radius: 6px; padding: 10px; margin-bottom: 6px; }
+                .desc-option p { color: var(--text); font-size: 13px; line-height: 1.5; margin: 0; }
+                .suggest-item { display: flex; align-items: flex-start; gap: 8px; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 6px; padding: 10px; margin-bottom: 6px; }
                 .suggest-item input[type="checkbox"] { margin-top: 3px; accent-color: #9b59b6; }
                 .suggest-item .suggest-key { font-weight: 600; color: #bc8cff; font-size: 12px; }
-                .suggest-item .suggest-value { color: #ccc; font-size: 12px; line-height: 1.4; }
+                .suggest-item .suggest-value { color: var(--text); font-size: 12px; line-height: 1.4; }
                 .suggest-item .agent-badge { font-size: 9px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
                 .custom-add { display: flex; gap: 6px; margin-top: 10px; }
-                .custom-add input { flex: 1; background: #1a1a2e; border: 1px solid #444; border-radius: 4px; color: #e0e0e0; padding: 6px 8px; font-size: 12px; }
+                .custom-add input { flex: 1; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 4px; color: var(--input-text); padding: 6px 8px; font-size: 12px; }
                 .custom-add button { white-space: nowrap; }
                 .summary-section { margin-bottom: 16px; }
                 .summary-section h4 { color: #bc8cff; font-size: 13px; margin-bottom: 6px; }
-                .summary-section .summary-items { background: #23233a; border-radius: 6px; padding: 8px 12px; }
-                .summary-section .summary-items li { color: #ccc; font-size: 12px; padding: 2px 0; list-style: none; }
+                .summary-section .summary-items { background: var(--card-bg); border-radius: 6px; padding: 8px 12px; }
+                .summary-section .summary-items li { color: var(--text); font-size: 12px; padding: 2px 0; list-style: none; }
                 .loading-suggestions { text-align: center; padding: 40px; color: #888; }
                 .loading-suggestions .spinner { display: inline-block; width: 24px; height: 24px; border: 3px solid #333; border-top-color: #9b59b6; border-radius: 50%; animation: spin 0.8s linear infinite; }
 
@@ -4657,7 +4669,7 @@ public static class PlatinumForgeServer
                 /* Chat Flyout */
                 #chat-panel { width: 420px; min-width: 320px; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: var(--surface); overflow: hidden; transition: width 0.3s ease, min-width 0.3s ease, opacity 0.3s ease; }
                 #chat-panel.collapsed { width: 0; min-width: 0; opacity: 0; pointer-events: none; border-left: none; }
-                #chat-panel .chat-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: linear-gradient(135deg, #1a1a2e, #16213e); border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 700; color: var(--accent); }
+                #chat-panel .chat-panel-header { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--header-bg); border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 700; color: var(--accent); }
                 #chat-toggle-btn { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 100; background: var(--surface2); border: 1px solid var(--border); border-right: none; color: var(--text-dim); padding: 8px 4px; border-radius: 6px 0 0 6px; cursor: pointer; font-size: 14px; transition: all 0.2s; display: none; }
                 #chat-toggle-btn:hover { background: var(--accent); color: #fff; }
                 #chat-toggle-btn.visible { display: block; }
@@ -4751,7 +4763,7 @@ public static class PlatinumForgeServer
                 /* Session Flyout */
                 #session-overlay, #share-overlay, #builds-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 900; }
                 #session-flyout { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; background: var(--surface); border-left: 2px solid var(--purple); z-index: 1000; display: flex; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,0.4); }
-                .flyout-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: linear-gradient(135deg, #1a1a2e, #16213e); border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 700; color: var(--purple); }
+                .flyout-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: var(--header-bg); border-bottom: 1px solid var(--border); font-size: 16px; font-weight: 700; color: var(--purple); }
                 .flyout-close { background: none; border: none; color: var(--text-dim); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 4px; }
                 .flyout-close:hover { background: var(--surface2); color: var(--text); }
                 .flyout-actions { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
@@ -4788,6 +4800,16 @@ public static class PlatinumForgeServer
                 .share-dialog h3 { color: var(--purple); margin-bottom: 12px; font-size: 16px; }
                 .share-url { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 13px; font-family: 'Cascadia Code', monospace; }
                 .share-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+
+                /* Theme toggle */
+                .theme-toggle { background: none; border: 1px solid var(--border); color: var(--text-dim); padding: 4px 10px; border-radius: 6px; font-size: 16px; cursor: pointer; transition: all 0.2s; line-height: 1; }
+                .theme-toggle:hover { border-color: var(--accent); color: var(--text); }
+                html { transition: background 0.3s ease; }
+                body, #header, #left, #right, #chat-panel, .flyout-header, #wizard-nav, #pipeline-nav, #gen-progress, .constraint-header, .agent-tabs { transition: background 0.3s ease, color 0.3s ease, border-color 0.3s ease; }
+                [data-theme="light"] .logo-text { background: linear-gradient(135deg, #1e40af, #2563eb, #3b82f6); -webkit-background-clip: text; }
+                [data-theme="light"] .btn-sm.save { color: #fff; }
+                [data-theme="light"] .btn-primary { color: #fff; }
+                [data-theme="light"] .btn-commit { color: #fff; }
 
                 /* Mobile bottom nav */
                 #mobile-nav { display: none; }
@@ -4904,6 +4926,7 @@ public static class PlatinumForgeServer
                     <button class="btn" style="font-size:12px;" onclick="importDefinitions()">📥 Import</button>
                     <button class="btn btn-sessions" id="sessionsBtn" onclick="toggleSessionFlyout()">🗂 <span id="sessionLabel">Session</span></button>
                     <button class="btn btn-commit" id="commitBtn" onclick="commitToDisk()">💾 Commit</button>
+                    <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
                     <span class="status-dot" id="statusDot"></span>
                     <span id="statusText">Ready</span>
                     <div class="user-area" id="userArea"></div>
@@ -5042,7 +5065,7 @@ public static class PlatinumForgeServer
                     editor = monaco.editor.create(document.getElementById('editor'), {
                         value: '// Waiting for generation...',
                         language: 'csharp',
-                        theme: 'vs-dark',
+                        theme: localStorage.getItem('pf-theme') === 'light' ? 'vs' : 'vs-dark',
                         readOnly: true,
                         minimap: { enabled: true },
                         fontSize: 13,
@@ -5087,6 +5110,28 @@ public static class PlatinumForgeServer
                     if (btn) btn.classList.add('active');
                     if (typeof editor !== 'undefined' && editor) setTimeout(() => editor.layout(), 50);
                 }
+
+                // ── Theme Toggle ──
+                function toggleTheme() {
+                    const html = document.documentElement;
+                    const isLight = html.getAttribute('data-theme') === 'light';
+                    const newTheme = isLight ? 'dark' : 'light';
+                    html.setAttribute('data-theme', newTheme);
+                    localStorage.setItem('pf-theme', newTheme);
+                    document.getElementById('themeToggle').textContent = newTheme === 'light' ? '☀️' : '🌙';
+                    if (typeof monaco !== 'undefined' && editor) {
+                        monaco.editor.setTheme(newTheme === 'light' ? 'vs' : 'vs-dark');
+                    }
+                }
+                (function initTheme() {
+                    const saved = localStorage.getItem('pf-theme');
+                    if (saved === 'light') {
+                        document.documentElement.setAttribute('data-theme', 'light');
+                        const btn = document.getElementById('themeToggle');
+                        if (btn) btn.textContent = '☀️';
+                    }
+                })();
+
                 let sseConnected = false;
                 let clientCount = 0;
 
@@ -5784,9 +5829,9 @@ public static class PlatinumForgeServer
                     let html = `<div class="wizard-title">${stage.title}</div>`;
                     html += `<div class="wizard-subtitle">${stage.subtitle}</div>`;
                     html += `<label style="color:#bc8cff;font-size:12px;font-weight:600;">Your idea (one sentence):</label>`;
-                    html += `<input id="idea-input" style="width:100%;background:#1a1a2e;border:1px solid #444;border-radius:6px;color:#e0e0e0;padding:10px;font-size:14px;margin:8px 0 16px;" placeholder="e.g. A real-time collaborative whiteboard for remote teams" value="${currentIdea.replace(/"/g, '&quot;')}" />`;
+                    html += `<input id="idea-input" style="width:100%;background:var(--input-bg);border:1px solid var(--input-border);border-radius:6px;color:var(--input-text);padding:10px;font-size:14px;margin:8px 0 16px;" placeholder="e.g. A real-time collaborative whiteboard for remote teams" value="${currentIdea.replace(/"/g, '&quot;')}" />`;
                     html += `<label style="color:#bc8cff;font-size:12px;font-weight:600;">Description (optional, expand on the idea):</label>`;
-                    html += `<textarea id="desc-input" style="width:100%;min-height:80px;background:#1a1a2e;border:1px solid #444;border-radius:6px;color:#e0e0e0;padding:10px;font-size:13px;resize:vertical;" placeholder="Add more detail about what you want to build...">${currentDesc}</textarea>`;
+                    html += `<textarea id="desc-input" style="width:100%;min-height:80px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:6px;color:var(--input-text);padding:10px;font-size:13px;resize:vertical;" placeholder="Add more detail about what you want to build...">${currentDesc}</textarea>`;
                     el.innerHTML = html;
                 }
 
@@ -5803,7 +5848,7 @@ public static class PlatinumForgeServer
                     const currentDesc = (currentState.description && currentState.description.main) || '';
                     let html = `<div class="wizard-title">${stage.title}</div>`;
                     html += `<div class="wizard-subtitle">${stage.subtitle}</div>`;
-                    html += `<textarea id="idea-input" style="width:100%;min-height:80px;background:#1a1a2e;border:1px solid #444;border-radius:6px;color:#e0e0e0;padding:10px;font-size:13px;resize:vertical;" placeholder="Describe your idea in one sentence...">${escHtml(currentDesc)}</textarea>`;
+                    html += `<textarea id="idea-input" style="width:100%;min-height:80px;background:var(--input-bg);border:1px solid var(--input-border);border-radius:6px;color:var(--input-text);padding:10px;font-size:13px;resize:vertical;" placeholder="Describe your idea in one sentence...">${escHtml(currentDesc)}</textarea>`;
 
                     const suggestions = wizardSuggestions['expansion'] || wizardSuggestions['description'];
                     if (suggestions && suggestions.length > 0) {
