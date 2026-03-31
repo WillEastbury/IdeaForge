@@ -3702,6 +3702,7 @@ public static class PlatinumForgeServer
 
             var elapsed = DateTime.UtcNow - pipelineStart;
             await BroadcastChat(live, "system", $"⏱️ Pipeline completed in {elapsed.TotalSeconds:F1}s");
+            _ = live.BroadcastAll("pipeline-complete", new { success = unitTestsPassed, projectName = live.State.Idea ?? "Project", elapsed = Math.Round(elapsed.TotalSeconds, 1) });
             
             // Save state
             var saveMeta = GetOrCreateUser(userSub);
@@ -3730,6 +3731,8 @@ public static class PlatinumForgeServer
         catch (Exception ex)
         {
             await BroadcastChat(live, "error", $"❌ Pipeline error: {ex.Message}");
+            var failElapsed = DateTime.UtcNow - pipelineStart;
+            _ = live.BroadcastAll("pipeline-complete", new { success = false, projectName = live.State.Idea ?? "Project", elapsed = Math.Round(failElapsed.TotalSeconds, 1) });
         }
         finally
         {
@@ -5261,6 +5264,11 @@ public static class PlatinumForgeServer
                         }
                     });
 
+                    es.addEventListener('pipeline-complete', e => {
+                        const d = JSON.parse(e.data);
+                        firePipelineNotification(d);
+                    });
+
                     es.onerror = () => { sseConnected = false; };
                     es.onopen = () => { sseConnected = true; };
                 }
@@ -5293,6 +5301,29 @@ public static class PlatinumForgeServer
                 let genTimerInterval = null;
                 let genStageStartTime = 0;
                 const GEN_STAGES = ['Init', 'Interfaces', 'Unit Tests', 'Code', 'Build & Test', 'NFR Tests', 'Soak Tests', 'Integration', 'Infrastructure', 'Publish'];
+
+                let notificationPermissionRequested = false;
+
+                function requestNotificationPermission() {
+                    if (notificationPermissionRequested) return;
+                    if (!('Notification' in window)) return;
+                    if (Notification.permission === 'default') {
+                        notificationPermissionRequested = true;
+                        Notification.requestPermission();
+                    }
+                }
+
+                function firePipelineNotification(data) {
+                    if (!('Notification' in window)) return;
+                    if (Notification.permission !== 'granted') return;
+                    if (!document.hidden) return;
+                    const status = data.success ? '✅ Build Passed' : '❌ Build Failed';
+                    const title = `PlatinumForge — ${status}`;
+                    const body = `${data.projectName || 'Project'} — Completed in ${data.elapsed}s`;
+                    const icon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">Ψ</text></svg>');
+                    const n = new Notification(title, { body, icon, tag: 'pipeline-complete' });
+                    n.onclick = () => { window.focus(); n.close(); };
+                }
 
                 function updateGenTimer() {
                     const el = document.getElementById('genElapsed');
@@ -6311,6 +6342,7 @@ public static class PlatinumForgeServer
                 }
 
                 async function submitPrompt(override) {
+                    requestNotificationPermission();
                     const input = document.getElementById('prompt-input');
                     const prompt = override || input.value.trim();
                     if (!prompt) return;

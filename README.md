@@ -384,6 +384,7 @@ my-project-v0.1.0/
 | `stage-complete` | `{ stage, status, reviews }` | Stage + council review results |
 | `test-result` | `{ category, runner, exitCode, output }` | Test runner results |
 | `artifact` | `{ fileName, version }` | Build published |
+| `pipeline-complete` | `{ success, projectName, elapsed }` | Pipeline finished (triggers browser notification) |
 | `ping` | `{ clients }` | Heartbeat + client count |
 
 ---
