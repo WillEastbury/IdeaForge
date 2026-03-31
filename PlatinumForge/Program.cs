@@ -5319,8 +5319,9 @@ public static class PlatinumForgeServer
                     if (!document.hidden) return;
                     const status = data.success ? '✅ Build Passed' : '❌ Build Failed';
                     const title = `PlatinumForge — ${status}`;
-                    const body = `${data.projectName || 'Project'}\nCompleted in ${data.elapsed}s`;
-                    const n = new Notification(title, { body, icon: 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>Ψ</text></svg>', tag: 'pipeline-complete' });
+                    const body = `${data.projectName || 'Project'} — Completed in ${data.elapsed}s`;
+                    const icon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">Ψ</text></svg>');
+                    const n = new Notification(title, { body, icon, tag: 'pipeline-complete' });
                     n.onclick = () => { window.focus(); n.close(); };
                 }
 
