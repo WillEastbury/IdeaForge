@@ -18,7 +18,9 @@ using System.Diagnostics;
 using System.Web;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Emit;
+using TreeSitter;
 
 // ─────────────────────────────────────────────
 // What if software built itself? — Single-file C# console app
@@ -461,6 +463,1810 @@ public static class DiffUtil
             }
         }
         return sb.Length == 0 ? "(no changes)" : sb.ToString();
+    }
+}
+
+// ── Code Graph ──────────────────────────────
+
+public enum CodeNodeKind
+{
+    File, Namespace, Class, Interface, Struct, Enum, Method, Property, Field,
+    Constructor, Event, Delegate, Function, Element, Selector, Unknown
+}
+
+public enum CodeEdgeKind { Contains, Calls, Implements, DependsOn, References, Overrides }
+
+public enum CodeLanguage { CSharp, JavaScript, HTML, CSS, Unknown }
+
+public class CodeNode
+{
+    public string Id { get; set; } = "";
+    public CodeNodeKind Kind { get; set; }
+    public string Name { get; set; } = "";
+    public string? FilePath { get; set; }
+    public int StartLine { get; set; }
+    public int EndLine { get; set; }
+    public CodeLanguage Language { get; set; }
+    public Dictionary<string, string> Metadata { get; set; } = new();
+}
+
+public class CodeEdge
+{
+    public string SourceId { get; set; } = "";
+    public string TargetId { get; set; } = "";
+    public CodeEdgeKind Kind { get; set; }
+}
+
+public class CodeGraph
+{
+    public Dictionary<string, CodeNode> Nodes { get; } = new();
+    public List<CodeEdge> Edges { get; } = new();
+
+    private readonly Dictionary<string, List<CodeEdge>> _outgoing = new();
+    private readonly Dictionary<string, List<CodeEdge>> _incoming = new();
+
+    public void AddNode(CodeNode node)
+    {
+        Nodes[node.Id] = node;
+    }
+
+    public void AddEdge(CodeEdge edge)
+    {
+        Edges.Add(edge);
+        if (!_outgoing.TryGetValue(edge.SourceId, out var outList))
+        {
+            outList = new List<CodeEdge>();
+            _outgoing[edge.SourceId] = outList;
+        }
+        outList.Add(edge);
+        if (!_incoming.TryGetValue(edge.TargetId, out var inList))
+        {
+            inList = new List<CodeEdge>();
+            _incoming[edge.TargetId] = inList;
+        }
+        inList.Add(edge);
+    }
+
+    public List<CodeEdge> OutgoingEdges(string nodeId) =>
+        _outgoing.TryGetValue(nodeId, out var list) ? list : new();
+
+    public List<CodeEdge> IncomingEdges(string nodeId) =>
+        _incoming.TryGetValue(nodeId, out var list) ? list : new();
+
+    public List<CodeNode> Children(string nodeId) =>
+        OutgoingEdges(nodeId)
+            .Where(e => e.Kind == CodeEdgeKind.Contains)
+            .Select(e => Nodes.TryGetValue(e.TargetId, out var n) ? n : null)
+            .Where(n => n != null)
+            .ToList()!;
+
+    public CodeNode? FindByName(string name) =>
+        Nodes.Values.FirstOrDefault(n => n.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    public List<CodeNode> FindByKind(CodeNodeKind kind) =>
+        Nodes.Values.Where(n => n.Kind == kind).ToList();
+
+    public List<CodeNode> FindByLanguage(CodeLanguage lang) =>
+        Nodes.Values.Where(n => n.Language == lang).ToList();
+
+    public void Clear()
+    {
+        Nodes.Clear();
+        Edges.Clear();
+        _outgoing.Clear();
+        _incoming.Clear();
+    }
+
+    public object ToSerializable() => new
+    {
+        nodes = Nodes.Values.Select(n => new
+        {
+            id = n.Id,
+            kind = n.Kind.ToString(),
+            name = n.Name,
+            filePath = n.FilePath,
+            startLine = n.StartLine,
+            endLine = n.EndLine,
+            language = n.Language.ToString(),
+            metadata = n.Metadata,
+        }),
+        edges = Edges.Select(e => new
+        {
+            sourceId = e.SourceId,
+            targetId = e.TargetId,
+            kind = e.Kind.ToString(),
+        }),
+    };
+}
+
+// ── Roslyn Graph Builder ────────────────────
+
+public static class RoslynGraphBuilder
+{
+    public static CodeGraph Build(SystemState state)
+    {
+        var graph = new CodeGraph();
+        var source = CodeCompiler.BuildFullSource(state);
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+
+        var refs = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator)
+            .Where(p => !string.IsNullOrEmpty(p))
+            .Select(p => MetadataReference.CreateFromFile(p))
+            .ToArray();
+
+        var compilation = CSharpCompilation.Create("GraphAnalysis",
+            syntaxTrees: new[] { syntaxTree },
+            references: refs,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+        var root = syntaxTree.GetRoot();
+
+        // Walk each source file entry in state to create file nodes
+        foreach (var (fileName, _) in state.Code)
+        {
+            graph.AddNode(new CodeNode
+            {
+                Id = $"file:{fileName}",
+                Kind = CodeNodeKind.File,
+                Name = fileName,
+                FilePath = fileName,
+                Language = CodeLanguage.CSharp,
+            });
+        }
+        foreach (var (fileName, _) in state.Interfaces)
+        {
+            var id = $"file:iface:{fileName}";
+            if (!graph.Nodes.ContainsKey(id))
+                graph.AddNode(new CodeNode
+                {
+                    Id = id,
+                    Kind = CodeNodeKind.File,
+                    Name = fileName,
+                    FilePath = fileName,
+                    Language = CodeLanguage.CSharp,
+                });
+        }
+
+        // Walk syntax tree
+        foreach (var nsDecl in root.DescendantNodes().OfType<BaseNamespaceDeclarationSyntax>())
+        {
+            var nsName = nsDecl.Name.ToString();
+            var nsId = $"ns:{nsName}";
+            var lineSpan = nsDecl.GetLocation().GetLineSpan();
+            graph.AddNode(new CodeNode
+            {
+                Id = nsId,
+                Kind = CodeNodeKind.Namespace,
+                Name = nsName,
+                StartLine = lineSpan.StartLinePosition.Line + 1,
+                EndLine = lineSpan.EndLinePosition.Line + 1,
+                Language = CodeLanguage.CSharp,
+            });
+
+            foreach (var typeDecl in nsDecl.DescendantNodes().OfType<TypeDeclarationSyntax>())
+                WalkType(graph, semanticModel, typeDecl, nsId);
+
+            foreach (var enumDecl in nsDecl.DescendantNodes().OfType<EnumDeclarationSyntax>())
+            {
+                if (enumDecl.Parent != nsDecl) continue;
+                var enumId = $"{nsId}.{enumDecl.Identifier.Text}";
+                var eLs = enumDecl.GetLocation().GetLineSpan();
+                graph.AddNode(new CodeNode
+                {
+                    Id = enumId,
+                    Kind = CodeNodeKind.Enum,
+                    Name = enumDecl.Identifier.Text,
+                    StartLine = eLs.StartLinePosition.Line + 1,
+                    EndLine = eLs.EndLinePosition.Line + 1,
+                    Language = CodeLanguage.CSharp,
+                });
+                graph.AddEdge(new CodeEdge { SourceId = nsId, TargetId = enumId, Kind = CodeEdgeKind.Contains });
+            }
+        }
+
+        // Resolve call edges via semantic model
+        foreach (var invocation in root.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            try
+            {
+                var symbolInfo = semanticModel.GetSymbolInfo(invocation);
+                if (symbolInfo.Symbol is IMethodSymbol methodSymbol)
+                {
+                    var callerMethod = invocation.Ancestors().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+                    if (callerMethod == null) continue;
+
+                    var callerType = callerMethod.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault();
+                    if (callerType == null) continue;
+
+                    var callerNs = callerType.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
+                    var callerNsName = callerNs?.Name.ToString() ?? "";
+                    var callerId = $"ns:{callerNsName}.{callerType.Identifier.Text}.{callerMethod.Identifier.Text}";
+
+                    var targetType = methodSymbol.ContainingType?.Name ?? "";
+                    var targetNs = methodSymbol.ContainingNamespace?.ToString() ?? "";
+                    var targetId = $"ns:{targetNs}.{targetType}.{methodSymbol.Name}";
+
+                    if (graph.Nodes.ContainsKey(callerId) && graph.Nodes.ContainsKey(targetId))
+                        graph.AddEdge(new CodeEdge { SourceId = callerId, TargetId = targetId, Kind = CodeEdgeKind.Calls });
+                }
+            }
+            catch { }
+        }
+
+        return graph;
+    }
+
+    private static void WalkType(CodeGraph graph, SemanticModel model, TypeDeclarationSyntax typeDecl, string parentId)
+    {
+        var typeName = typeDecl.Identifier.Text;
+        var typeId = $"{parentId}.{typeName}";
+        var lineSpan = typeDecl.GetLocation().GetLineSpan();
+
+        var kind = typeDecl switch
+        {
+            ClassDeclarationSyntax => CodeNodeKind.Class,
+            InterfaceDeclarationSyntax => CodeNodeKind.Interface,
+            StructDeclarationSyntax => CodeNodeKind.Struct,
+            RecordDeclarationSyntax => CodeNodeKind.Class,
+            _ => CodeNodeKind.Class,
+        };
+
+        graph.AddNode(new CodeNode
+        {
+            Id = typeId,
+            Kind = kind,
+            Name = typeName,
+            StartLine = lineSpan.StartLinePosition.Line + 1,
+            EndLine = lineSpan.EndLinePosition.Line + 1,
+            Language = CodeLanguage.CSharp,
+            Metadata = new()
+            {
+                ["modifiers"] = typeDecl.Modifiers.ToString(),
+            },
+        });
+        graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = typeId, Kind = CodeEdgeKind.Contains });
+
+        // Base types → Implements edges
+        if (typeDecl.BaseList != null)
+        {
+            foreach (var baseType in typeDecl.BaseList.Types)
+            {
+                var baseSymbol = model.GetSymbolInfo(baseType.Type).Symbol;
+                if (baseSymbol is INamedTypeSymbol namedType)
+                {
+                    var baseNs = namedType.ContainingNamespace?.ToString() ?? "";
+                    var baseId = $"ns:{baseNs}.{namedType.Name}";
+                    if (graph.Nodes.ContainsKey(baseId) || true)
+                    {
+                        graph.AddEdge(new CodeEdge
+                        {
+                            SourceId = typeId,
+                            TargetId = baseId,
+                            Kind = namedType.TypeKind == TypeKind.Interface
+                                ? CodeEdgeKind.Implements
+                                : CodeEdgeKind.DependsOn,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Methods
+        foreach (var method in typeDecl.Members.OfType<MethodDeclarationSyntax>())
+        {
+            var mId = $"{typeId}.{method.Identifier.Text}";
+            var mLs = method.GetLocation().GetLineSpan();
+            graph.AddNode(new CodeNode
+            {
+                Id = mId,
+                Kind = CodeNodeKind.Method,
+                Name = method.Identifier.Text,
+                StartLine = mLs.StartLinePosition.Line + 1,
+                EndLine = mLs.EndLinePosition.Line + 1,
+                Language = CodeLanguage.CSharp,
+                Metadata = new()
+                {
+                    ["returnType"] = method.ReturnType.ToString(),
+                    ["parameters"] = method.ParameterList.ToString(),
+                    ["modifiers"] = method.Modifiers.ToString(),
+                },
+            });
+            graph.AddEdge(new CodeEdge { SourceId = typeId, TargetId = mId, Kind = CodeEdgeKind.Contains });
+        }
+
+        // Constructors
+        foreach (var ctor in typeDecl.Members.OfType<ConstructorDeclarationSyntax>())
+        {
+            var cId = $"{typeId}..ctor";
+            var cLs = ctor.GetLocation().GetLineSpan();
+            graph.AddNode(new CodeNode
+            {
+                Id = cId,
+                Kind = CodeNodeKind.Constructor,
+                Name = typeName,
+                StartLine = cLs.StartLinePosition.Line + 1,
+                EndLine = cLs.EndLinePosition.Line + 1,
+                Language = CodeLanguage.CSharp,
+            });
+            graph.AddEdge(new CodeEdge { SourceId = typeId, TargetId = cId, Kind = CodeEdgeKind.Contains });
+        }
+
+        // Properties
+        foreach (var prop in typeDecl.Members.OfType<PropertyDeclarationSyntax>())
+        {
+            var pId = $"{typeId}.{prop.Identifier.Text}";
+            var pLs = prop.GetLocation().GetLineSpan();
+            graph.AddNode(new CodeNode
+            {
+                Id = pId,
+                Kind = CodeNodeKind.Property,
+                Name = prop.Identifier.Text,
+                StartLine = pLs.StartLinePosition.Line + 1,
+                EndLine = pLs.EndLinePosition.Line + 1,
+                Language = CodeLanguage.CSharp,
+                Metadata = new()
+                {
+                    ["type"] = prop.Type.ToString(),
+                },
+            });
+            graph.AddEdge(new CodeEdge { SourceId = typeId, TargetId = pId, Kind = CodeEdgeKind.Contains });
+        }
+
+        // Fields
+        foreach (var field in typeDecl.Members.OfType<FieldDeclarationSyntax>())
+        {
+            foreach (var variable in field.Declaration.Variables)
+            {
+                var fId = $"{typeId}.{variable.Identifier.Text}";
+                var fLs = field.GetLocation().GetLineSpan();
+                graph.AddNode(new CodeNode
+                {
+                    Id = fId,
+                    Kind = CodeNodeKind.Field,
+                    Name = variable.Identifier.Text,
+                    StartLine = fLs.StartLinePosition.Line + 1,
+                    EndLine = fLs.EndLinePosition.Line + 1,
+                    Language = CodeLanguage.CSharp,
+                    Metadata = new()
+                    {
+                        ["type"] = field.Declaration.Type.ToString(),
+                    },
+                });
+                graph.AddEdge(new CodeEdge { SourceId = typeId, TargetId = fId, Kind = CodeEdgeKind.Contains });
+            }
+        }
+
+        // Events
+        foreach (var evt in typeDecl.Members.OfType<EventDeclarationSyntax>())
+        {
+            var eId = $"{typeId}.{evt.Identifier.Text}";
+            var eLs = evt.GetLocation().GetLineSpan();
+            graph.AddNode(new CodeNode
+            {
+                Id = eId,
+                Kind = CodeNodeKind.Event,
+                Name = evt.Identifier.Text,
+                StartLine = eLs.StartLinePosition.Line + 1,
+                EndLine = eLs.EndLinePosition.Line + 1,
+                Language = CodeLanguage.CSharp,
+            });
+            graph.AddEdge(new CodeEdge { SourceId = typeId, TargetId = eId, Kind = CodeEdgeKind.Contains });
+        }
+
+        // Nested types
+        foreach (var nested in typeDecl.Members.OfType<TypeDeclarationSyntax>())
+            WalkType(graph, model, nested, typeId);
+    }
+}
+
+// ── Tree-Sitter Graph Builder ───────────────
+
+public static class TreeSitterGraphBuilder
+{
+    public static void AddJavaScript(CodeGraph graph, string source, string filePath = "embedded.js")
+    {
+        try
+        {
+            using var language = new Language("JavaScript");
+            using var parser = new Parser(language);
+            using var tree = parser.Parse(source);
+            if (tree == null) return;
+
+            var fileId = $"file:{filePath}";
+            graph.AddNode(new CodeNode
+            {
+                Id = fileId,
+                Kind = CodeNodeKind.File,
+                Name = filePath,
+                FilePath = filePath,
+                Language = CodeLanguage.JavaScript,
+            });
+
+            WalkJsNode(graph, tree.RootNode, fileId, filePath);
+        }
+        catch { }
+    }
+
+    private static void WalkJsNode(CodeGraph graph, Node node, string parentId, string filePath)
+    {
+        for (int i = 0; i < node.Children.Count; i++)
+        {
+            var child = node.Children[i];
+            if (child == null) continue;
+
+            var nodeType = child.Type;
+
+            if (nodeType == "function_declaration" || nodeType == "function")
+            {
+                var nameNode = child.GetChildForField("name");
+                var name = nameNode?.Text ?? $"anon_{child.StartPosition.Row}";
+                var fnId = $"{parentId}.fn:{name}";
+                graph.AddNode(new CodeNode
+                {
+                    Id = fnId,
+                    Kind = CodeNodeKind.Function,
+                    Name = name,
+                    FilePath = filePath,
+                    StartLine = (int)child.StartPosition.Row + 1,
+                    EndLine = (int)child.EndPosition.Row + 1,
+                    Language = CodeLanguage.JavaScript,
+                });
+                graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = fnId, Kind = CodeEdgeKind.Contains });
+
+                // Recurse into function body for nested functions
+                var body = child.GetChildForField("body");
+                if (body != null)
+                    WalkJsNode(graph, body, fnId, filePath);
+            }
+            else if (nodeType == "arrow_function")
+            {
+                // Check if assigned to a variable
+                var parent = child.Parent;
+                string name = $"arrow_{child.StartPosition.Row}";
+                if (parent?.Type == "variable_declarator")
+                {
+                    var nameN = parent.GetChildForField("name");
+                    if (nameN != null) name = nameN.Text;
+                }
+                var fnId = $"{parentId}.fn:{name}";
+                graph.AddNode(new CodeNode
+                {
+                    Id = fnId,
+                    Kind = CodeNodeKind.Function,
+                    Name = name,
+                    FilePath = filePath,
+                    StartLine = (int)child.StartPosition.Row + 1,
+                    EndLine = (int)child.EndPosition.Row + 1,
+                    Language = CodeLanguage.JavaScript,
+                });
+                graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = fnId, Kind = CodeEdgeKind.Contains });
+
+                var body = child.GetChildForField("body");
+                if (body != null)
+                    WalkJsNode(graph, body, fnId, filePath);
+            }
+            else if (nodeType == "class_declaration")
+            {
+                var nameNode = child.GetChildForField("name");
+                var name = nameNode?.Text ?? $"Class_{child.StartPosition.Row}";
+                var classId = $"{parentId}.class:{name}";
+                graph.AddNode(new CodeNode
+                {
+                    Id = classId,
+                    Kind = CodeNodeKind.Class,
+                    Name = name,
+                    FilePath = filePath,
+                    StartLine = (int)child.StartPosition.Row + 1,
+                    EndLine = (int)child.EndPosition.Row + 1,
+                    Language = CodeLanguage.JavaScript,
+                });
+                graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = classId, Kind = CodeEdgeKind.Contains });
+
+                var bodyNode = child.GetChildForField("body");
+                if (bodyNode != null)
+                    WalkJsNode(graph, bodyNode, classId, filePath);
+            }
+            else if (nodeType == "method_definition")
+            {
+                var nameNode = child.GetChildForField("name");
+                var name = nameNode?.Text ?? $"method_{child.StartPosition.Row}";
+                var methodId = $"{parentId}.method:{name}";
+                graph.AddNode(new CodeNode
+                {
+                    Id = methodId,
+                    Kind = CodeNodeKind.Method,
+                    Name = name,
+                    FilePath = filePath,
+                    StartLine = (int)child.StartPosition.Row + 1,
+                    EndLine = (int)child.EndPosition.Row + 1,
+                    Language = CodeLanguage.JavaScript,
+                });
+                graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = methodId, Kind = CodeEdgeKind.Contains });
+            }
+            else if (nodeType == "call_expression")
+            {
+                // Track call references
+                var fnNode = child.GetChildForField("function");
+                if (fnNode != null)
+                {
+                    var callName = fnNode.Text;
+                    var callerMethod = parentId;
+                    graph.AddNode(new CodeNode
+                    {
+                        Id = $"ref:{callName}:{child.StartPosition.Row}",
+                        Kind = CodeNodeKind.Unknown,
+                        Name = callName,
+                        FilePath = filePath,
+                        StartLine = (int)child.StartPosition.Row + 1,
+                        EndLine = (int)child.EndPosition.Row + 1,
+                        Language = CodeLanguage.JavaScript,
+                        Metadata = new() { ["refType"] = "call" },
+                    });
+                    graph.AddEdge(new CodeEdge
+                    {
+                        SourceId = callerMethod,
+                        TargetId = $"ref:{callName}:{child.StartPosition.Row}",
+                        Kind = CodeEdgeKind.Calls,
+                    });
+                }
+                WalkJsNode(graph, child, parentId, filePath);
+            }
+            else
+            {
+                WalkJsNode(graph, child, parentId, filePath);
+            }
+        }
+    }
+
+    public static void AddHtml(CodeGraph graph, string source, string filePath = "embedded.html")
+    {
+        try
+        {
+            using var language = new Language("HTML");
+            using var parser = new Parser(language);
+            using var tree = parser.Parse(source);
+            if (tree == null) return;
+
+            var fileId = $"file:{filePath}";
+            graph.AddNode(new CodeNode
+            {
+                Id = fileId,
+                Kind = CodeNodeKind.File,
+                Name = filePath,
+                FilePath = filePath,
+                Language = CodeLanguage.HTML,
+            });
+
+            WalkHtmlNode(graph, tree.RootNode, fileId, filePath);
+        }
+        catch { }
+    }
+
+    private static void WalkHtmlNode(CodeGraph graph, Node node, string parentId, string filePath)
+    {
+        for (int i = 0; i < node.Children.Count; i++)
+        {
+            var child = node.Children[i];
+            if (child == null) continue;
+
+            if (child.Type == "element" || child.Type == "self_closing_tag")
+            {
+                // Find the tag name from the start_tag or self_closing_tag
+                string? tagName = null;
+                string? idAttr = null;
+                string? classAttr = null;
+
+                var startTag = child.Type == "self_closing_tag" ? child : child.GetChildForField("start_tag");
+                if (startTag == null && child.Children.Count > 0)
+                {
+                    for (int j = 0; j < child.Children.Count; j++)
+                    {
+                        var sub = child.Children[j];
+                        if (sub?.Type == "start_tag") { startTag = sub; break; }
+                    }
+                }
+
+                if (startTag != null)
+                {
+                    var tagNameNode = startTag.GetChildForField("tag_name");
+                    if (tagNameNode == null)
+                    {
+                        for (int j = 0; j < startTag.Children.Count; j++)
+                        {
+                            var sub = startTag.Children[j];
+                            if (sub?.Type == "tag_name") { tagNameNode = sub; break; }
+                        }
+                    }
+                    tagName = tagNameNode?.Text;
+
+                    // Extract id and class attributes
+                    for (int j = 0; j < startTag.Children.Count; j++)
+                    {
+                        var attr = startTag.Children[j];
+                        if (attr?.Type != "attribute") continue;
+                        var attrName = attr.GetChildForField("attribute_name");
+                        var attrValue = attr.GetChildForField("attribute_value");
+                        if (attrName == null)
+                        {
+                            for (int k = 0; k < attr.Children.Count; k++)
+                            {
+                                var an = attr.Children[k];
+                                if (an?.Type == "attribute_name") attrName = an;
+                                if (an?.Type == "quoted_attribute_value" || an?.Type == "attribute_value") attrValue = an;
+                            }
+                        }
+                        if (attrName?.Text == "id") idAttr = attrValue?.Text?.Trim('"', '\'');
+                        if (attrName?.Text == "class") classAttr = attrValue?.Text?.Trim('"', '\'');
+                    }
+                }
+
+                tagName ??= "unknown";
+                var displayName = idAttr != null ? $"{tagName}#{idAttr}" : tagName;
+                var elemId = $"{parentId}.elem:{displayName}:{child.StartPosition.Row}";
+
+                var metadata = new Dictionary<string, string> { ["tag"] = tagName };
+                if (idAttr != null) metadata["id"] = idAttr;
+                if (classAttr != null) metadata["class"] = classAttr;
+
+                graph.AddNode(new CodeNode
+                {
+                    Id = elemId,
+                    Kind = CodeNodeKind.Element,
+                    Name = displayName,
+                    FilePath = filePath,
+                    StartLine = (int)child.StartPosition.Row + 1,
+                    EndLine = (int)child.EndPosition.Row + 1,
+                    Language = CodeLanguage.HTML,
+                    Metadata = metadata,
+                });
+                graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = elemId, Kind = CodeEdgeKind.Contains });
+
+                WalkHtmlNode(graph, child, elemId, filePath);
+            }
+            else
+            {
+                WalkHtmlNode(graph, child, parentId, filePath);
+            }
+        }
+    }
+
+    public static void AddCss(CodeGraph graph, string source, string filePath = "embedded.css")
+    {
+        try
+        {
+            using var language = new Language("CSS");
+            using var parser = new Parser(language);
+            using var tree = parser.Parse(source);
+            if (tree == null) return;
+
+            var fileId = $"file:{filePath}";
+            graph.AddNode(new CodeNode
+            {
+                Id = fileId,
+                Kind = CodeNodeKind.File,
+                Name = filePath,
+                FilePath = filePath,
+                Language = CodeLanguage.CSS,
+            });
+
+            WalkCssNode(graph, tree.RootNode, fileId, filePath);
+        }
+        catch { }
+    }
+
+    private static void WalkCssNode(CodeGraph graph, Node node, string parentId, string filePath)
+    {
+        for (int i = 0; i < node.Children.Count; i++)
+        {
+            var child = node.Children[i];
+            if (child == null) continue;
+
+            if (child.Type == "rule_set")
+            {
+                string selectorText = "";
+                for (int j = 0; j < child.Children.Count; j++)
+                {
+                    var sub = child.Children[j];
+                    if (sub?.Type == "selectors")
+                    {
+                        selectorText = sub.Text;
+                        break;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(selectorText))
+                {
+                    var selId = $"{parentId}.sel:{selectorText.Trim()}:{child.StartPosition.Row}";
+                    graph.AddNode(new CodeNode
+                    {
+                        Id = selId,
+                        Kind = CodeNodeKind.Selector,
+                        Name = selectorText.Trim(),
+                        FilePath = filePath,
+                        StartLine = (int)child.StartPosition.Row + 1,
+                        EndLine = (int)child.EndPosition.Row + 1,
+                        Language = CodeLanguage.CSS,
+                    });
+                    graph.AddEdge(new CodeEdge { SourceId = parentId, TargetId = selId, Kind = CodeEdgeKind.Contains });
+                }
+            }
+            else if (child.Type == "media_statement" || child.Type == "at_rule")
+            {
+                WalkCssNode(graph, child, parentId, filePath);
+            }
+        }
+    }
+
+    /// <summary>Build a combined graph from PlatinumForge's embedded SPA (HTML with inline JS/CSS).</summary>
+    public static void AddEmbeddedSpa(CodeGraph graph, string htmlSource)
+    {
+        AddHtml(graph, htmlSource, "spa.html");
+
+        // Extract <script> blocks and parse as JS
+        var scriptStart = 0;
+        int scriptIdx = 0;
+        while (true)
+        {
+            var openTag = htmlSource.IndexOf("<script", scriptStart, StringComparison.OrdinalIgnoreCase);
+            if (openTag < 0) break;
+            var openEnd = htmlSource.IndexOf('>', openTag);
+            if (openEnd < 0) break;
+            var closeTag = htmlSource.IndexOf("</script>", openEnd, StringComparison.OrdinalIgnoreCase);
+            if (closeTag < 0) break;
+
+            var jsSource = htmlSource[(openEnd + 1)..closeTag];
+            if (jsSource.Trim().Length > 0)
+                AddJavaScript(graph, jsSource, $"spa.script[{scriptIdx}].js");
+            scriptIdx++;
+            scriptStart = closeTag + 9;
+        }
+
+        // Extract <style> blocks and parse as CSS
+        var styleStart = 0;
+        int styleIdx = 0;
+        while (true)
+        {
+            var openTag = htmlSource.IndexOf("<style", styleStart, StringComparison.OrdinalIgnoreCase);
+            if (openTag < 0) break;
+            var openEnd = htmlSource.IndexOf('>', openTag);
+            if (openEnd < 0) break;
+            var closeTag = htmlSource.IndexOf("</style>", openEnd, StringComparison.OrdinalIgnoreCase);
+            if (closeTag < 0) break;
+
+            var cssSource = htmlSource[(openEnd + 1)..closeTag];
+            if (cssSource.Trim().Length > 0)
+                AddCss(graph, cssSource, $"spa.style[{styleIdx}].css");
+            styleIdx++;
+            styleStart = closeTag + 8;
+        }
+    }
+}
+
+// ── HNSW Vector Index ───────────────────────
+
+public class VectorSearchResult
+{
+    public string Id { get; set; } = "";
+    public float Distance { get; set; }
+    public float Score { get; set; }
+    public Dictionary<string, string> Metadata { get; set; } = new();
+}
+
+public class HnswIndex
+{
+    private readonly int _dimensions;
+    private readonly int _m;
+    private readonly int _mMax0;
+    private readonly int _efConstruction;
+    private int _efSearch;
+    private readonly double _mL;
+    private readonly Random _rng = new();
+
+    private int _entryPoint = -1;
+    private int _maxLevel = -1;
+
+    private readonly List<float[]> _vectors = new();
+    private readonly List<string> _ids = new();
+    private readonly List<Dictionary<string, string>> _metadata = new();
+    private readonly Dictionary<string, int> _idToIndex = new();
+    private readonly List<List<List<int>>> _layers = new();
+    private readonly List<int> _nodeLevels = new();
+
+    public int Count => _vectors.Count;
+    public int Dimensions => _dimensions;
+
+    public HnswIndex(int dimensions, int m = 16, int efConstruction = 200, int efSearch = 50)
+    {
+        _dimensions = dimensions;
+        _m = m;
+        _mMax0 = m * 2;
+        _efConstruction = efConstruction;
+        _efSearch = efSearch;
+        _mL = 1.0 / Math.Log(m);
+    }
+
+    private int RandomLevel()
+    {
+        return (int)(-Math.Log(_rng.NextDouble()) * _mL);
+    }
+
+    private static float CosineDistance(float[] a, float[] b)
+    {
+        float dot = 0, normA = 0, normB = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            dot += a[i] * b[i];
+            normA += a[i] * a[i];
+            normB += b[i] * b[i];
+        }
+        float denom = MathF.Sqrt(normA) * MathF.Sqrt(normB);
+        return denom == 0 ? 1f : 1f - dot / denom;
+    }
+
+    public void Insert(string id, float[] vector, Dictionary<string, string>? metadata = null)
+    {
+        if (vector.Length != _dimensions)
+            throw new ArgumentException($"Expected {_dimensions} dimensions, got {vector.Length}");
+
+        if (_idToIndex.TryGetValue(id, out var existingIdx))
+        {
+            _vectors[existingIdx] = vector;
+            if (metadata != null) _metadata[existingIdx] = metadata;
+            return;
+        }
+
+        var nodeIndex = _vectors.Count;
+        _vectors.Add(vector);
+        _ids.Add(id);
+        _metadata.Add(metadata ?? new());
+        _idToIndex[id] = nodeIndex;
+
+        var level = RandomLevel();
+        _nodeLevels.Add(level);
+
+        var nodeLayers = new List<List<int>>();
+        for (int i = 0; i <= level; i++)
+            nodeLayers.Add(new List<int>());
+        _layers.Add(nodeLayers);
+
+        if (_entryPoint == -1)
+        {
+            _entryPoint = nodeIndex;
+            _maxLevel = level;
+            return;
+        }
+
+        var ep = _entryPoint;
+
+        // Greedy traverse from top to node's level + 1
+        for (int lc = _maxLevel; lc > level; lc--)
+            ep = GreedyClosest(vector, ep, lc);
+
+        for (int lc = Math.Min(level, _maxLevel); lc >= 0; lc--)
+        {
+            var candidates = SearchLayer(vector, ep, _efConstruction, lc);
+            var maxConn = lc == 0 ? _mMax0 : _m;
+            var neighbors = SelectNeighbors(vector, candidates, maxConn);
+
+            foreach (var neighbor in neighbors)
+            {
+                _layers[nodeIndex][lc].Add(neighbor);
+
+                while (_layers[neighbor].Count <= lc)
+                    _layers[neighbor].Add(new List<int>());
+
+                _layers[neighbor][lc].Add(nodeIndex);
+
+                if (_layers[neighbor][lc].Count > maxConn)
+                    _layers[neighbor][lc] = SelectNeighbors(_vectors[neighbor], _layers[neighbor][lc], maxConn);
+            }
+
+            if (candidates.Count > 0)
+                ep = candidates[0].Index;
+        }
+
+        if (level > _maxLevel)
+        {
+            _maxLevel = level;
+            _entryPoint = nodeIndex;
+        }
+    }
+
+    private int GreedyClosest(float[] query, int ep, int layer)
+    {
+        var dist = CosineDistance(query, _vectors[ep]);
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            if (layer < _layers[ep].Count)
+            {
+                foreach (var neighbor in _layers[ep][layer])
+                {
+                    var d = CosineDistance(query, _vectors[neighbor]);
+                    if (d < dist)
+                    {
+                        dist = d;
+                        ep = neighbor;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        return ep;
+    }
+
+    private List<(int Index, float Distance)> SearchLayer(float[] query, int ep, int ef, int layer)
+    {
+        var visited = new HashSet<int> { ep };
+        var epDist = CosineDistance(query, _vectors[ep]);
+
+        var candidates = new PriorityQueue<int, float>();
+        candidates.Enqueue(ep, epDist);
+
+        var results = new List<(int Index, float Distance)> { (ep, epDist) };
+        float farthestDist = epDist;
+
+        while (candidates.Count > 0)
+        {
+            candidates.TryDequeue(out var cIdx, out var cDist);
+            if (cDist > farthestDist && results.Count >= ef) break;
+
+            if (layer < _layers[cIdx].Count)
+            {
+                foreach (var neighbor in _layers[cIdx][layer])
+                {
+                    if (!visited.Add(neighbor)) continue;
+                    var nDist = CosineDistance(query, _vectors[neighbor]);
+
+                    if (nDist < farthestDist || results.Count < ef)
+                    {
+                        candidates.Enqueue(neighbor, nDist);
+                        results.Add((neighbor, nDist));
+
+                        if (results.Count > ef)
+                        {
+                            results.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+                            results.RemoveAt(results.Count - 1);
+                            farthestDist = results[^1].Distance;
+                        }
+                        else if (nDist > farthestDist)
+                        {
+                            farthestDist = nDist;
+                        }
+                    }
+                }
+            }
+        }
+
+        results.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        return results;
+    }
+
+    private List<int> SelectNeighbors(float[] query, List<(int Index, float Distance)> candidates, int maxConn)
+    {
+        return candidates
+            .OrderBy(c => c.Distance)
+            .Take(maxConn)
+            .Select(c => c.Index)
+            .ToList();
+    }
+
+    private List<int> SelectNeighbors(float[] query, List<int> candidates, int maxConn)
+    {
+        return candidates
+            .Select(c => (Index: c, Distance: CosineDistance(query, _vectors[c])))
+            .OrderBy(c => c.Distance)
+            .Take(maxConn)
+            .Select(c => c.Index)
+            .ToList();
+    }
+
+    public List<VectorSearchResult> Search(float[] query, int k = 10, int? efSearch = null)
+    {
+        if (_entryPoint == -1) return new();
+
+        var ef = efSearch ?? _efSearch;
+        var ep = _entryPoint;
+
+        for (int lc = _maxLevel; lc > 0; lc--)
+            ep = GreedyClosest(query, ep, lc);
+
+        var candidates = SearchLayer(query, ep, Math.Max(ef, k), 0);
+
+        return candidates
+            .OrderBy(c => c.Distance)
+            .Take(k)
+            .Select(c => new VectorSearchResult
+            {
+                Id = _ids[c.Index],
+                Distance = c.Distance,
+                Score = 1f - c.Distance,
+                Metadata = _metadata[c.Index],
+            })
+            .ToList();
+    }
+
+    public object Serialize() => new
+    {
+        dimensions = _dimensions,
+        m = _m,
+        efConstruction = _efConstruction,
+        efSearch = _efSearch,
+        entryPoint = _entryPoint,
+        maxLevel = _maxLevel,
+        vectors = _vectors.Select((v, i) => new
+        {
+            id = _ids[i],
+            vector = v,
+            metadata = _metadata[i],
+            level = _nodeLevels[i],
+        }),
+        layers = _layers.Select(nl => nl.Select(l => l.ToArray()).ToArray()).ToArray(),
+    };
+
+    public static HnswIndex Deserialize(JsonElement root)
+    {
+        var dim = root.GetProperty("dimensions").GetInt32();
+        var m = root.GetProperty("m").GetInt32();
+        var efc = root.GetProperty("efConstruction").GetInt32();
+        var efs = root.GetProperty("efSearch").GetInt32();
+
+        var index = new HnswIndex(dim, m, efc, efs);
+        index._entryPoint = root.GetProperty("entryPoint").GetInt32();
+        index._maxLevel = root.GetProperty("maxLevel").GetInt32();
+
+        foreach (var v in root.GetProperty("vectors").EnumerateArray())
+        {
+            var id = v.GetProperty("id").GetString()!;
+            var vec = v.GetProperty("vector").EnumerateArray().Select(e => e.GetSingle()).ToArray();
+            var meta = new Dictionary<string, string>();
+            foreach (var p in v.GetProperty("metadata").EnumerateObject())
+                meta[p.Name] = p.Value.GetString() ?? "";
+            var level = v.GetProperty("level").GetInt32();
+
+            index._ids.Add(id);
+            index._vectors.Add(vec);
+            index._metadata.Add(meta);
+            index._idToIndex[id] = index._ids.Count - 1;
+            index._nodeLevels.Add(level);
+        }
+
+        foreach (var nl in root.GetProperty("layers").EnumerateArray())
+        {
+            var nodeLayers = new List<List<int>>();
+            foreach (var l in nl.EnumerateArray())
+                nodeLayers.Add(l.EnumerateArray().Select(e => e.GetInt32()).ToList());
+            index._layers.Add(nodeLayers);
+        }
+
+        return index;
+    }
+}
+
+// ── Embedding Client ────────────────────────
+
+public static class EmbeddingClient
+{
+    private static readonly HttpClient Http = new();
+    private static string? _apiKey;
+    private static string ApiKey => _apiKey ??=
+        Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+        ?? throw new InvalidOperationException("Set OPENAI_API_KEY env var.");
+
+    private static readonly string EmbeddingEndpoint =
+        (Environment.GetEnvironmentVariable("OPENAI_ENDPOINT") ?? "https://api.openai.com/v1/chat/completions")
+            .Replace("/chat/completions", "/embeddings");
+
+    private static readonly ConcurrentDictionary<string, float[]> _cache = new();
+
+    public static async Task<float[]> Embed(string text, string model = "text-embedding-3-small")
+    {
+        var hash = ComputeHash(text + "|" + model);
+        if (_cache.TryGetValue(hash, out var cached)) return cached;
+
+        var body = new { input = text, model };
+        var json = JsonSerializer.Serialize(body);
+        var req = new HttpRequestMessage(HttpMethod.Post, EmbeddingEndpoint)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        req.Headers.Add("Authorization", $"Bearer {ApiKey}");
+
+        var resp = await Http.SendAsync(req);
+        var respText = await resp.Content.ReadAsStringAsync();
+        if (!resp.IsSuccessStatusCode)
+            throw new Exception($"Embedding API {resp.StatusCode}: {respText}");
+
+        using var doc = JsonDocument.Parse(respText);
+        var embedding = doc.RootElement
+            .GetProperty("data")[0]
+            .GetProperty("embedding")
+            .EnumerateArray()
+            .Select(e => e.GetSingle())
+            .ToArray();
+
+        _cache[hash] = embedding;
+        return embedding;
+    }
+
+    public static async Task<float[][]> EmbedBatch(string[] texts, string model = "text-embedding-3-small")
+    {
+        var results = new float[texts.Length][];
+        var uncachedIndices = new List<int>();
+        var uncachedTexts = new List<string>();
+
+        for (int i = 0; i < texts.Length; i++)
+        {
+            var hash = ComputeHash(texts[i] + "|" + model);
+            if (_cache.TryGetValue(hash, out var cached))
+                results[i] = cached;
+            else
+            {
+                uncachedIndices.Add(i);
+                uncachedTexts.Add(texts[i]);
+            }
+        }
+
+        if (uncachedTexts.Count == 0) return results;
+
+        // Batch in groups of 100 (OpenAI limit)
+        for (int batch = 0; batch < uncachedTexts.Count; batch += 100)
+        {
+            var batchTexts = uncachedTexts.Skip(batch).Take(100).ToList();
+            var batchOffsets = uncachedIndices.Skip(batch).Take(100).ToList();
+
+            var body = new { input = batchTexts, model };
+            var json = JsonSerializer.Serialize(body);
+            var req = new HttpRequestMessage(HttpMethod.Post, EmbeddingEndpoint)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json")
+            };
+            req.Headers.Add("Authorization", $"Bearer {ApiKey}");
+
+            var resp = await Http.SendAsync(req);
+            var respText = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+                throw new Exception($"Embedding API {resp.StatusCode}: {respText}");
+
+            using var doc = JsonDocument.Parse(respText);
+            var data = doc.RootElement.GetProperty("data");
+
+            for (int i = 0; i < batchTexts.Count; i++)
+            {
+                var embedding = data[i].GetProperty("embedding")
+                    .EnumerateArray()
+                    .Select(e => e.GetSingle())
+                    .ToArray();
+
+                var hash = ComputeHash(batchTexts[i] + "|" + model);
+                _cache[hash] = embedding;
+                results[batchOffsets[i]] = embedding;
+            }
+        }
+
+        return results;
+    }
+
+    private static string ComputeHash(string input)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(bytes);
+    }
+}
+
+// ── Vector Store ────────────────────────────
+
+public class VectorStoreConfig
+{
+    public string Name { get; set; } = "";
+    public string EmbeddingModel { get; set; } = "text-embedding-3-small";
+    public int Dimensions { get; set; } = 1536;
+    public int M { get; set; } = 16;
+    public int EfConstruction { get; set; } = 200;
+    public int EfSearch { get; set; } = 50;
+}
+
+public class VectorStore
+{
+    private readonly Dictionary<string, HnswIndex> _indices = new();
+    private readonly Dictionary<string, VectorStoreConfig> _configs = new();
+
+    public static readonly VectorStoreConfig[] DefaultIndices =
+    {
+        new() { Name = "code", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+        new() { Name = "comments", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+        new() { Name = "vulnerabilities", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+        new() { Name = "libraries", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+        new() { Name = "dependencies", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+        new() { Name = "patterns", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+        new() { Name = "specs", EmbeddingModel = "text-embedding-3-small", Dimensions = 1536 },
+    };
+
+    public VectorStore()
+    {
+        foreach (var cfg in DefaultIndices)
+        {
+            _configs[cfg.Name] = cfg;
+            _indices[cfg.Name] = new HnswIndex(cfg.Dimensions, cfg.M, cfg.EfConstruction, cfg.EfSearch);
+        }
+    }
+
+    public HnswIndex GetIndex(string name) =>
+        _indices.TryGetValue(name, out var idx)
+            ? idx
+            : throw new KeyNotFoundException($"Vector index '{name}' not found");
+
+    public VectorStoreConfig GetConfig(string name) =>
+        _configs.TryGetValue(name, out var cfg)
+            ? cfg
+            : throw new KeyNotFoundException($"Vector index config '{name}' not found");
+
+    public IReadOnlyDictionary<string, HnswIndex> Indices => _indices;
+
+    public async Task IndexDocument(string indexName, string docId, string content, Dictionary<string, string>? metadata = null)
+    {
+        var config = GetConfig(indexName);
+        var vector = await EmbeddingClient.Embed(content, config.EmbeddingModel);
+        var idx = GetIndex(indexName);
+        var meta = metadata ?? new();
+        meta["_content"] = content.Length > 500 ? content[..500] : content;
+        idx.Insert(docId, vector, meta);
+    }
+
+    public async Task IndexDocumentBatch(string indexName, (string Id, string Content, Dictionary<string, string>? Metadata)[] docs)
+    {
+        if (docs.Length == 0) return;
+        var config = GetConfig(indexName);
+        var texts = docs.Select(d => d.Content).ToArray();
+        var vectors = await EmbeddingClient.EmbedBatch(texts, config.EmbeddingModel);
+        var idx = GetIndex(indexName);
+
+        for (int i = 0; i < docs.Length; i++)
+        {
+            var meta = docs[i].Metadata ?? new();
+            meta["_content"] = docs[i].Content.Length > 500 ? docs[i].Content[..500] : docs[i].Content;
+            idx.Insert(docs[i].Id, vectors[i], meta);
+        }
+    }
+
+    public List<VectorSearchResult> Search(string indexName, float[] query, int k = 10) =>
+        GetIndex(indexName).Search(query, k);
+
+    public async Task<List<VectorSearchResult>> SearchByText(string indexName, string query, int k = 10)
+    {
+        var config = GetConfig(indexName);
+        var vector = await EmbeddingClient.Embed(query, config.EmbeddingModel);
+        return Search(indexName, vector, k);
+    }
+
+    public async Task ReindexFromState(SystemState state)
+    {
+        foreach (var cfg in DefaultIndices)
+            _indices[cfg.Name] = new HnswIndex(cfg.Dimensions, cfg.M, cfg.EfConstruction, cfg.EfSearch);
+
+        var codeDocs = state.Code
+            .Select(kv => (Id: $"code:{kv.Key}", Content: kv.Value,
+                Metadata: (Dictionary<string, string>?)new Dictionary<string, string> { ["file"] = kv.Key, ["type"] = "code" }))
+            .ToArray();
+        if (codeDocs.Length > 0) await IndexDocumentBatch("code", codeDocs);
+
+        var ifaceDocs = state.Interfaces
+            .Select(kv => (Id: $"iface:{kv.Key}", Content: kv.Value,
+                Metadata: (Dictionary<string, string>?)new Dictionary<string, string> { ["file"] = kv.Key, ["type"] = "interface" }))
+            .ToArray();
+        if (ifaceDocs.Length > 0) await IndexDocumentBatch("code", ifaceDocs);
+
+        var specDocs = new List<(string Id, string Content, Dictionary<string, string>? Metadata)>();
+        foreach (var (k, v) in state.Description)
+            specDocs.Add(($"desc:{k}", v, new Dictionary<string, string> { ["field"] = "description", ["key"] = k }));
+        foreach (var (k, v) in state.Rules)
+            specDocs.Add(($"rule:{k}", v, new Dictionary<string, string> { ["field"] = "rules", ["key"] = k }));
+        foreach (var (k, v) in state.Invariants)
+            specDocs.Add(($"inv:{k}", v, new Dictionary<string, string> { ["field"] = "invariants", ["key"] = k }));
+        foreach (var (k, v) in state.NFR)
+            specDocs.Add(($"nfr:{k}", v, new Dictionary<string, string> { ["field"] = "nfr", ["key"] = k }));
+        foreach (var (k, v) in state.AcceptanceCriteria)
+            specDocs.Add(($"ac:{k}", v, new Dictionary<string, string> { ["field"] = "acceptance_criteria", ["key"] = k }));
+        foreach (var (k, v) in state.Features)
+            specDocs.Add(($"feat:{k}", v, new Dictionary<string, string> { ["field"] = "features", ["key"] = k }));
+        foreach (var (k, v) in state.Stories)
+            specDocs.Add(($"story:{k}", v, new Dictionary<string, string> { ["field"] = "stories", ["key"] = k }));
+        if (specDocs.Count > 0) await IndexDocumentBatch("specs", specDocs.ToArray());
+
+        var libDocs = new List<(string Id, string Content, Dictionary<string, string>? Metadata)>();
+        foreach (var (k, v) in state.FrameworksAndTools)
+            libDocs.Add(($"fw:{k}", v, new Dictionary<string, string> { ["field"] = "frameworks", ["key"] = k }));
+        foreach (var (k, v) in state.ProjectFiles)
+            libDocs.Add(($"proj:{k}", v, new Dictionary<string, string> { ["field"] = "project_files", ["key"] = k }));
+        if (libDocs.Count > 0) await IndexDocumentBatch("libraries", libDocs.ToArray());
+
+        var patternDocs = new List<(string Id, string Content, Dictionary<string, string>? Metadata)>();
+        foreach (var (k, v) in state.Architecture)
+            patternDocs.Add(($"arch:{k}", v, new Dictionary<string, string> { ["field"] = "architecture", ["key"] = k }));
+        foreach (var (k, v) in state.Dataflow)
+            patternDocs.Add(($"df:{k}", v, new Dictionary<string, string> { ["field"] = "dataflow", ["key"] = k }));
+        if (patternDocs.Count > 0) await IndexDocumentBatch("patterns", patternDocs.ToArray());
+
+        var depDocs = new List<(string Id, string Content, Dictionary<string, string>? Metadata)>();
+        foreach (var (k, v) in state.ConstraintRegistry)
+            depDocs.Add(($"dep:{k}", v, new Dictionary<string, string> { ["field"] = "constraints", ["key"] = k }));
+        if (depDocs.Count > 0) await IndexDocumentBatch("dependencies", depDocs.ToArray());
+    }
+
+    public void SaveToDisk(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        foreach (var (name, idx) in _indices)
+        {
+            if (idx.Count == 0) continue;
+            var json = JsonSerializer.Serialize(idx.Serialize(), new JsonSerializerOptions { WriteIndented = false });
+            File.WriteAllText(Path.Combine(directory, $"{name}.json"), json);
+        }
+    }
+
+    public void LoadFromDisk(string directory)
+    {
+        if (!Directory.Exists(directory)) return;
+        foreach (var file in Directory.GetFiles(directory, "*.json"))
+        {
+            var name = Path.GetFileNameWithoutExtension(file);
+            if (!_configs.ContainsKey(name)) continue;
+            try
+            {
+                var json = File.ReadAllText(file);
+                using var doc = JsonDocument.Parse(json);
+                _indices[name] = HnswIndex.Deserialize(doc.RootElement);
+            }
+            catch { }
+        }
+    }
+}
+
+// ── Full-Text Search Index ──────────────────
+
+public class SearchPosting
+{
+    public string DocId { get; set; } = "";
+    public string Field { get; set; } = "";
+    public List<int> Positions { get; set; } = new();
+}
+
+public class SearchDocument
+{
+    public string Id { get; set; } = "";
+    public string Field { get; set; } = "";
+    public int TokenCount { get; set; }
+}
+
+public enum SearchQueryOp { And, Or }
+
+public class SearchQueryTerm
+{
+    public string Term { get; set; } = "";
+    public string? Field { get; set; }
+    public bool IsPhrase { get; set; }
+    public List<string>? PhraseTokens { get; set; }
+}
+
+public class SearchQuery
+{
+    public List<SearchQueryTerm> Terms { get; set; } = new();
+    public SearchQueryOp Op { get; set; } = SearchQueryOp.And;
+}
+
+public class SearchResult
+{
+    public string DocId { get; set; } = "";
+    public string Field { get; set; } = "";
+    public double Score { get; set; }
+    public string Snippet { get; set; } = "";
+}
+
+public class SearchIndex
+{
+    private readonly Dictionary<string, List<SearchPosting>> _invertedIndex = new();
+    private readonly Dictionary<string, SearchDocument> _documents = new();
+    private readonly Dictionary<string, string> _docContent = new();
+    private double _avgDocLength;
+    private const double K1 = 1.2;
+    private const double B = 0.75;
+
+    private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+        "has", "have", "he", "in", "is", "it", "its", "of", "on", "or", "she",
+        "that", "the", "to", "was", "were", "will", "with", "this", "not", "no",
+        "can", "do", "if", "my", "our", "so", "than", "them", "then", "they",
+        "we", "what", "which", "who", "would", "you", "your",
+        "public", "private", "static", "void", "class", "return", "var", "new",
+        "using", "namespace", "get", "set", "string", "int", "bool",
+    };
+
+    public static List<string> Tokenize(string text)
+    {
+        var tokens = new List<string>();
+        var sb = new StringBuilder();
+
+        for (int i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (char.IsLetterOrDigit(c))
+            {
+                // camelCase / PascalCase split
+                if (sb.Length > 0 && char.IsUpper(c) && i > 0 && char.IsLower(text[i - 1]))
+                {
+                    tokens.Add(sb.ToString().ToLowerInvariant());
+                    sb.Clear();
+                }
+                sb.Append(c);
+            }
+            else if (c == '_')
+            {
+                if (sb.Length > 0)
+                {
+                    tokens.Add(sb.ToString().ToLowerInvariant());
+                    sb.Clear();
+                }
+            }
+            else
+            {
+                if (sb.Length > 0)
+                {
+                    tokens.Add(sb.ToString().ToLowerInvariant());
+                    sb.Clear();
+                }
+            }
+        }
+        if (sb.Length > 0)
+            tokens.Add(sb.ToString().ToLowerInvariant());
+
+        return tokens;
+    }
+
+    public static List<string> TokenizeAndFilter(string text)
+    {
+        return Tokenize(text)
+            .Where(t => t.Length > 1 && !StopWords.Contains(t))
+            .ToList();
+    }
+
+    public void IndexDocument(string docId, string field, string content)
+    {
+        var key = $"{docId}|{field}";
+        var tokens = TokenizeAndFilter(content);
+
+        _documents[key] = new SearchDocument { Id = docId, Field = field, TokenCount = tokens.Count };
+        _docContent[key] = content;
+
+        for (int pos = 0; pos < tokens.Count; pos++)
+        {
+            var token = tokens[pos];
+            if (!_invertedIndex.TryGetValue(token, out var postings))
+            {
+                postings = new List<SearchPosting>();
+                _invertedIndex[token] = postings;
+            }
+
+            var posting = postings.FirstOrDefault(p => p.DocId == key && p.Field == field);
+            if (posting == null)
+            {
+                posting = new SearchPosting { DocId = key, Field = field };
+                postings.Add(posting);
+            }
+            posting.Positions.Add(pos);
+        }
+
+        if (_documents.Count > 0)
+            _avgDocLength = _documents.Values.Average(d => (double)d.TokenCount);
+    }
+
+    public void Clear()
+    {
+        _invertedIndex.Clear();
+        _documents.Clear();
+        _docContent.Clear();
+        _avgDocLength = 0;
+    }
+
+    public static SearchQuery ParseQuery(string queryText)
+    {
+        var query = new SearchQuery();
+        query.Op = queryText.Contains(" OR ", StringComparison.OrdinalIgnoreCase)
+            ? SearchQueryOp.Or
+            : SearchQueryOp.And;
+
+        var parts = new List<string>();
+        var current = new StringBuilder();
+        bool inQuotes = false;
+
+        for (int i = 0; i < queryText.Length; i++)
+        {
+            if (queryText[i] == '"')
+            {
+                inQuotes = !inQuotes;
+                current.Append(queryText[i]);
+            }
+            else if (!inQuotes && i + 4 < queryText.Length && queryText.Substring(i, 4) == " OR ")
+            {
+                if (current.Length > 0) parts.Add(current.ToString().Trim());
+                current.Clear();
+                i += 3;
+            }
+            else if (!inQuotes && i + 5 < queryText.Length && queryText.Substring(i, 5) == " AND ")
+            {
+                if (current.Length > 0) parts.Add(current.ToString().Trim());
+                current.Clear();
+                i += 4;
+            }
+            else
+            {
+                current.Append(queryText[i]);
+            }
+        }
+        if (current.Length > 0) parts.Add(current.ToString().Trim());
+
+        foreach (var part in parts)
+        {
+            var term = new SearchQueryTerm();
+            var p = part.Trim();
+
+            // field:value
+            var colonIdx = p.IndexOf(':');
+            if (colonIdx > 0 && colonIdx < p.Length - 1 && !p.StartsWith('"'))
+            {
+                term.Field = p[..colonIdx].ToLowerInvariant();
+                p = p[(colonIdx + 1)..];
+            }
+
+            // "phrase query"
+            if (p.StartsWith('"') && p.EndsWith('"') && p.Length > 2)
+            {
+                term.IsPhrase = true;
+                var phraseText = p[1..^1];
+                term.PhraseTokens = TokenizeAndFilter(phraseText);
+                term.Term = phraseText.ToLowerInvariant();
+            }
+            else
+            {
+                term.Term = p.ToLowerInvariant();
+            }
+
+            query.Terms.Add(term);
+        }
+
+        return query;
+    }
+
+    public List<SearchResult> Search(string queryText, int maxResults = 20)
+    {
+        var query = ParseQuery(queryText);
+        if (query.Terms.Count == 0) return new();
+
+        var scores = new Dictionary<string, double>();
+        int N = _documents.Count;
+        if (N == 0) return new();
+
+        foreach (var term in query.Terms)
+        {
+            Dictionary<string, double> termScores;
+
+            if (term.IsPhrase && term.PhraseTokens != null && term.PhraseTokens.Count > 1)
+                termScores = ScorePhrase(term.PhraseTokens, term.Field, N);
+            else
+            {
+                var tokens = TokenizeAndFilter(term.Term);
+                termScores = new();
+                foreach (var token in tokens)
+                {
+                    var tokenScores = ScoreTerm(token, term.Field, N);
+                    foreach (var (docKey, score) in tokenScores)
+                    {
+                        termScores.TryGetValue(docKey, out var existing);
+                        termScores[docKey] = existing + score;
+                    }
+                }
+            }
+
+            if (query.Op == SearchQueryOp.And && scores.Count > 0)
+            {
+                var intersection = new Dictionary<string, double>();
+                foreach (var (docKey, score) in termScores)
+                {
+                    if (scores.ContainsKey(docKey))
+                        intersection[docKey] = scores[docKey] + score;
+                }
+                scores = intersection;
+            }
+            else
+            {
+                foreach (var (docKey, score) in termScores)
+                {
+                    scores.TryGetValue(docKey, out var existing);
+                    scores[docKey] = existing + score;
+                }
+            }
+        }
+
+        return scores
+            .OrderByDescending(kv => kv.Value)
+            .Take(maxResults)
+            .Select(kv =>
+            {
+                var doc = _documents[kv.Key];
+                _docContent.TryGetValue(kv.Key, out var content);
+                return new SearchResult
+                {
+                    DocId = doc.Id,
+                    Field = doc.Field,
+                    Score = kv.Value,
+                    Snippet = ExtractSnippet(content ?? "", query),
+                };
+            })
+            .ToList();
+    }
+
+    private Dictionary<string, double> ScoreTerm(string token, string? fieldFilter, int N)
+    {
+        var scores = new Dictionary<string, double>();
+        if (!_invertedIndex.TryGetValue(token, out var postings)) return scores;
+
+        int df = postings.Count;
+        double idf = Math.Log((N - df + 0.5) / (df + 0.5) + 1.0);
+
+        foreach (var posting in postings)
+        {
+            if (fieldFilter != null && !posting.Field.Equals(fieldFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var doc = _documents[posting.DocId];
+            double tf = posting.Positions.Count;
+            double dl = doc.TokenCount;
+            double score = idf * (tf * (K1 + 1)) / (tf + K1 * (1 - B + B * dl / _avgDocLength));
+            scores[posting.DocId] = score;
+        }
+
+        return scores;
+    }
+
+    private Dictionary<string, double> ScorePhrase(List<string> phraseTokens, string? fieldFilter, int N)
+    {
+        var scores = new Dictionary<string, double>();
+        if (phraseTokens.Count == 0) return scores;
+
+        if (!_invertedIndex.TryGetValue(phraseTokens[0], out var firstPostings)) return scores;
+
+        foreach (var posting in firstPostings)
+        {
+            if (fieldFilter != null && !posting.Field.Equals(fieldFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            foreach (var startPos in posting.Positions)
+            {
+                bool found = true;
+                for (int i = 1; i < phraseTokens.Count; i++)
+                {
+                    if (!_invertedIndex.TryGetValue(phraseTokens[i], out var nextPostings))
+                    { found = false; break; }
+
+                    var nextPosting = nextPostings.FirstOrDefault(p => p.DocId == posting.DocId);
+                    if (nextPosting == null || !nextPosting.Positions.Contains(startPos + i))
+                    { found = false; break; }
+                }
+
+                if (found)
+                {
+                    var doc = _documents[posting.DocId];
+                    double dl = doc.TokenCount;
+                    double score = 2.0 * (1.0 + 1.0) / (1.0 + K1 * (1 - B + B * dl / _avgDocLength));
+                    scores.TryGetValue(posting.DocId, out var existing);
+                    scores[posting.DocId] = existing + score;
+                    break;
+                }
+            }
+        }
+
+        return scores;
+    }
+
+    private static string ExtractSnippet(string content, SearchQuery query, int contextChars = 100)
+    {
+        if (string.IsNullOrEmpty(content)) return "";
+
+        foreach (var term in query.Terms)
+        {
+            var searchFor = term.IsPhrase ? term.Term : term.Term;
+            var idx = content.IndexOf(searchFor, StringComparison.OrdinalIgnoreCase);
+            if (idx >= 0)
+            {
+                var start = Math.Max(0, idx - contextChars / 2);
+                var end = Math.Min(content.Length, idx + searchFor.Length + contextChars / 2);
+                var snippet = content[start..end].Replace('\n', ' ').Replace('\r', ' ');
+                if (start > 0) snippet = "…" + snippet;
+                if (end < content.Length) snippet += "…";
+                return snippet;
+            }
+        }
+
+        return content.Length > contextChars
+            ? content[..contextChars].Replace('\n', ' ') + "…"
+            : content.Replace('\n', ' ');
+    }
+
+    public void IndexFromState(SystemState state)
+    {
+        Clear();
+
+        IndexDict(state.Code, "code");
+        IndexDict(state.Interfaces, "interfaces");
+        IndexDict(state.FileManifest, "file_manifest");
+        IndexDict(state.ProjectFiles, "project_files");
+        IndexDict(state.BuildConfig, "build_config");
+        IndexDict(state.Description, "description");
+        IndexDict(state.Interpretations, "interpretations");
+        IndexDict(state.Personas, "personas");
+        IndexDict(state.PersonaLineage, "persona_lineage");
+        IndexDict(state.Rules, "rules");
+        IndexDict(state.Invariants, "invariants");
+        IndexDict(state.NFR, "nfr");
+        IndexDict(state.ConstraintRegistry, "constraints");
+        IndexDict(state.Features, "features");
+        IndexDict(state.Stories, "stories");
+        IndexDict(state.AcceptanceCriteria, "acceptance_criteria");
+        IndexDict(state.UnitTests, "unit_tests");
+        IndexDict(state.IntegrationTests, "integration_tests");
+        IndexDict(state.E2eTests, "e2e_tests");
+        IndexDict(state.SoakTests, "soak_tests");
+        IndexDict(state.Architecture, "architecture");
+        IndexDict(state.Dataflow, "dataflow");
+        IndexDict(state.FrameworksAndTools, "frameworks");
+        IndexDict(state.Language, "language");
+        IndexDict(state.DeploymentModel, "deployment");
+    }
+
+    private void IndexDict(Dictionary<string, string> dict, string field)
+    {
+        foreach (var (key, value) in dict)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+                IndexDocument(key, field, value);
+        }
+    }
+
+    public void SaveToDisk(string filePath)
+    {
+        var data = new
+        {
+            content = _docContent,
+            avgDocLength = _avgDocLength,
+        };
+        var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = false });
+        File.WriteAllText(filePath, json);
+    }
+
+    public void LoadFromDisk(string filePath)
+    {
+        if (!File.Exists(filePath)) return;
+        try
+        {
+            var json = File.ReadAllText(filePath);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            Clear();
+            if (root.TryGetProperty("content", out var contentProp))
+            {
+                foreach (var prop in contentProp.EnumerateObject())
+                {
+                    var parts = prop.Name.Split('|', 2);
+                    if (parts.Length == 2)
+                        IndexDocument(parts[0], parts[1], prop.Value.GetString() ?? "");
+                }
+            }
+        }
+        catch { }
     }
 }
 
@@ -1560,6 +3366,11 @@ public class LiveSession
     public bool Generating { get; set; } = false;
     public int SnapshotCounter { get; set; } = 0;
 
+    // In-memory stores
+    public CodeGraph Graph { get; set; } = new();
+    public VectorStore Vectors { get; set; } = new();
+    public SearchIndex Search { get; set; } = new();
+
     private readonly ConcurrentDictionary<string, SseClient> _sseClients = new();
     private readonly object _lock = new();
 
@@ -1963,6 +3774,14 @@ public static class PlatinumForgeServer
                 live.CurrentSource = CodeCompiler.BuildFullSource(loaded);
             }
 
+            // Initialize in-memory stores
+            try { live.Graph = RoslynGraphBuilder.Build(live.State); } catch { }
+            live.Search.IndexFromState(live.State);
+            var vectorDir = Path.Combine(AuthManager.UserSessionsDir(ownerSub), id, "vectors");
+            live.Vectors.LoadFromDisk(vectorDir);
+            var searchFile = Path.Combine(AuthManager.UserSessionsDir(ownerSub), id, "search-index.json");
+            live.Search.LoadFromDisk(searchFile);
+
             live.PushSnapshot("Session loaded");
             live.AddChat("system", $"📂 Session active");
             return live;
@@ -1994,6 +3813,16 @@ public static class PlatinumForgeServer
         var ownerMeta = GetOrCreateUser(ownerSub);
         EnsureUserInit(ownerMeta);
         ownerMeta.CommitState(live.SessionId, live.State);
+
+        // Persist vector and search indices
+        try
+        {
+            var sessionDir = Path.Combine(AuthManager.UserSessionsDir(ownerSub), live.SessionId);
+            live.Vectors.SaveToDisk(Path.Combine(sessionDir, "vectors"));
+            live.Search.SaveToDisk(Path.Combine(sessionDir, "search-index.json"));
+        }
+        catch { }
+
         return ownerMeta.SessionStoreFile(live.SessionId);
     }
 
@@ -3130,6 +4959,93 @@ public static class PlatinumForgeServer
                     }
                 }
             }
+            // ── Code Graph, Vector Search, Full-Text Search routes ──
+            else if (path == "/api/code-graph" && method == "GET")
+            {
+                body = JsonSerializer.Serialize(live.Graph.ToSerializable());
+            }
+            else if (path.StartsWith("/api/code-graph/node/") && method == "GET")
+            {
+                var nodeId = HttpUtility.UrlDecode(path["/api/code-graph/node/".Length..]);
+                if (live.Graph.Nodes.TryGetValue(nodeId, out var node))
+                {
+                    var outEdges = live.Graph.OutgoingEdges(nodeId);
+                    var inEdges = live.Graph.IncomingEdges(nodeId);
+                    body = JsonSerializer.Serialize(new
+                    {
+                        node = new { id = node.Id, kind = node.Kind.ToString(), name = node.Name, filePath = node.FilePath, startLine = node.StartLine, endLine = node.EndLine, language = node.Language.ToString(), metadata = node.Metadata },
+                        outgoing = outEdges.Select(e => new { sourceId = e.SourceId, targetId = e.TargetId, kind = e.Kind.ToString() }),
+                        incoming = inEdges.Select(e => new { sourceId = e.SourceId, targetId = e.TargetId, kind = e.Kind.ToString() }),
+                    });
+                }
+                else
+                {
+                    body = JsonSerializer.Serialize(new { error = "Node not found" });
+                    ctx.Response.StatusCode = 404;
+                }
+            }
+            else if (path == "/api/code-graph/rebuild" && method == "POST")
+            {
+                try
+                {
+                    live.Graph = RoslynGraphBuilder.Build(live.State);
+                    body = JsonSerializer.Serialize(new { ok = true, nodeCount = live.Graph.Nodes.Count, edgeCount = live.Graph.Edges.Count });
+                    _ = live.BroadcastAll("index-updated", new { graph = true });
+                }
+                catch (Exception ex)
+                {
+                    body = JsonSerializer.Serialize(new { error = ex.Message });
+                    ctx.Response.StatusCode = 500;
+                }
+            }
+            else if (path == "/api/vector-search" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var query = doc.RootElement.GetProperty("query").GetString() ?? "";
+                var indexName = doc.RootElement.TryGetProperty("index", out var idxProp) ? idxProp.GetString() ?? "code" : "code";
+                var k = doc.RootElement.TryGetProperty("k", out var kProp) ? kProp.GetInt32() : 10;
+
+                try
+                {
+                    var results = await live.Vectors.SearchByText(indexName, query, k);
+                    body = JsonSerializer.Serialize(new { results = results.Select(r => new { r.Id, r.Distance, r.Score, r.Metadata }) });
+                }
+                catch (Exception ex)
+                {
+                    body = JsonSerializer.Serialize(new { error = ex.Message });
+                    ctx.Response.StatusCode = 500;
+                }
+            }
+            else if (path == "/api/vector-reindex" && method == "POST")
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await live.Vectors.ReindexFromState(live.State);
+                        _ = live.BroadcastAll("index-updated", new { vectors = true });
+                    }
+                    catch { }
+                });
+                body = JsonSerializer.Serialize(new { ok = true, message = "Vector reindex started" });
+            }
+            else if (path == "/api/search" && method == "POST")
+            {
+                var reqBody = await ReadBody(ctx.Request);
+                var doc = JsonDocument.Parse(reqBody);
+                var query = doc.RootElement.GetProperty("query").GetString() ?? "";
+                var maxResults = doc.RootElement.TryGetProperty("maxResults", out var mrProp) ? mrProp.GetInt32() : 20;
+
+                var results = live.Search.Search(query, maxResults);
+                body = JsonSerializer.Serialize(new { results = results.Select(r => new { r.DocId, r.Field, r.Score, r.Snippet }) });
+            }
+            else if (path == "/api/search-reindex" && method == "POST")
+            {
+                live.Search.IndexFromState(live.State);
+                _ = live.BroadcastAll("index-updated", new { search = true });
+                body = JsonSerializer.Serialize(new { ok = true });
+            }
             else
             {
                 body = HtmlPage();
@@ -4118,6 +6034,20 @@ public static class PlatinumForgeServer
             live.PushSnapshot($"Generation attempt {attempt} — all unit tests passed");
             await BroadcastChat(live, "success", "🎉 All unit tests passed! Changes accepted.");
             _ = live.BroadcastAll("code", new { code = fullSource });
+
+            // Rebuild in-memory stores after successful generation
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    live.Graph = RoslynGraphBuilder.Build(live.State);
+                    live.Search.IndexFromState(live.State);
+                    await live.Vectors.ReindexFromState(live.State);
+                    _ = live.BroadcastAll("index-updated", new { graph = true, search = true, vectors = true });
+                }
+                catch { }
+            });
+
             return true;
         }
 
