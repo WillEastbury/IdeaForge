@@ -577,6 +577,94 @@ public class CodeGraph
             kind = e.Kind.ToString(),
         }),
     };
+
+    public string ToMermaid()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("graph TD");
+
+        // Build sanitized ID map (Mermaid IDs must be alphanumeric / underscores)
+        var idMap = new Dictionary<string, string>();
+        int counter = 0;
+        foreach (var node in Nodes.Values)
+        {
+            var safe = $"n{counter++}";
+            idMap[node.Id] = safe;
+        }
+
+        // Emit node declarations with shape based on kind
+        foreach (var node in Nodes.Values)
+        {
+            var safe = idMap[node.Id];
+            var label = EscapeMermaid(node.Name);
+            var decl = node.Kind switch
+            {
+                CodeNodeKind.File => $"    {safe}[/\"{label}\"/]",
+                CodeNodeKind.Namespace => $"    {safe}[\"{label}\"]",
+                CodeNodeKind.Class => $"    {safe}[[\"{label}\"]]",
+                CodeNodeKind.Interface => $"    {safe}([\"{label}\"])",
+                CodeNodeKind.Struct => $"    {safe}[[\"{label}\"]]",
+                CodeNodeKind.Enum => $"    {safe}{{\"{label}\"}}",
+                CodeNodeKind.Method or CodeNodeKind.Function => $"    {safe}([\"{label}()\"])",
+                CodeNodeKind.Constructor => $"    {safe}([\"{label}()\"])",
+                CodeNodeKind.Property => $"    {safe}>\"{label}\"]",
+                CodeNodeKind.Field => $"    {safe}>\"{label}\"]",
+                CodeNodeKind.Element => $"    {safe}(\"{label}\")",
+                CodeNodeKind.Selector => $"    {safe}((\"{label}\"))",
+                _ => $"    {safe}[\"{label}\"]",
+            };
+            sb.AppendLine(decl);
+        }
+
+        sb.AppendLine();
+
+        // Emit edges with style based on kind
+        foreach (var edge in Edges)
+        {
+            if (!idMap.TryGetValue(edge.SourceId, out var src)) continue;
+            if (!idMap.TryGetValue(edge.TargetId, out var tgt)) continue;
+
+            var arrow = edge.Kind switch
+            {
+                CodeEdgeKind.Contains => $"    {src} --> {tgt}",
+                CodeEdgeKind.Calls => $"    {src} -.->|calls| {tgt}",
+                CodeEdgeKind.Implements => $"    {src} ==>|implements| {tgt}",
+                CodeEdgeKind.DependsOn => $"    {src} -.->|depends| {tgt}",
+                CodeEdgeKind.References => $"    {src} -.-> {tgt}",
+                CodeEdgeKind.Overrides => $"    {src} ==>|overrides| {tgt}",
+                _ => $"    {src} --> {tgt}",
+            };
+            sb.AppendLine(arrow);
+        }
+
+        // Add style classes
+        sb.AppendLine();
+        var fileNodes = Nodes.Values.Where(n => n.Kind == CodeNodeKind.File).Select(n => idMap[n.Id]);
+        var classNodes = Nodes.Values.Where(n => n.Kind is CodeNodeKind.Class or CodeNodeKind.Struct).Select(n => idMap[n.Id]);
+        var ifaceNodes = Nodes.Values.Where(n => n.Kind == CodeNodeKind.Interface).Select(n => idMap[n.Id]);
+        var methodNodes = Nodes.Values.Where(n => n.Kind is CodeNodeKind.Method or CodeNodeKind.Function or CodeNodeKind.Constructor).Select(n => idMap[n.Id]);
+
+        if (fileNodes.Any())
+            sb.AppendLine($"    classDef file fill:#e2e8f0,stroke:#64748b");
+        if (classNodes.Any())
+            sb.AppendLine($"    classDef cls fill:#dbeafe,stroke:#3b82f6");
+        if (ifaceNodes.Any())
+            sb.AppendLine($"    classDef iface fill:#fef3c7,stroke:#f59e0b");
+        if (methodNodes.Any())
+            sb.AppendLine($"    classDef method fill:#d1fae5,stroke:#10b981");
+
+        foreach (var id in fileNodes) sb.AppendLine($"    class {id} file");
+        foreach (var id in classNodes) sb.AppendLine($"    class {id} cls");
+        foreach (var id in ifaceNodes) sb.AppendLine($"    class {id} iface");
+        foreach (var id in methodNodes) sb.AppendLine($"    class {id} method");
+
+        return sb.ToString();
+    }
+
+    private static string EscapeMermaid(string text)
+    {
+        return text.Replace("\"", "#quot;").Replace("<", "&lt;").Replace(">", "&gt;");
+    }
 }
 
 // ── Roslyn Graph Builder ────────────────────
@@ -4996,6 +5084,20 @@ public static class PlatinumForgeServer
                 {
                     body = JsonSerializer.Serialize(new { error = ex.Message });
                     ctx.Response.StatusCode = 500;
+                }
+            }
+            else if (path == "/api/code-graph/mermaid" && method == "GET")
+            {
+                var mermaid = live.Graph.ToMermaid();
+                var format = ctx.Request.QueryString["format"];
+                if (format == "json")
+                {
+                    body = JsonSerializer.Serialize(new { mermaid });
+                }
+                else
+                {
+                    body = mermaid;
+                    contentType = "text/plain";
                 }
             }
             else if (path == "/api/vector-search" && method == "POST")
