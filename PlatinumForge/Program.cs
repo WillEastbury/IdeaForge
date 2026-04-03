@@ -466,6 +466,19 @@ public static class DiffUtil
     }
 }
 
+// ── Targeted Error Context ──────────────────
+
+public class TargetedErrorContext
+{
+    public HashSet<string> BrokenFiles { get; } = new();
+    public HashSet<string> WorkingFiles { get; } = new();
+    public HashSet<string> ReferencingFiles { get; } = new();
+    public Dictionary<string, List<string>> ErrorsByFile { get; } = new();
+    public Dictionary<string, string> InterfacesForBroken { get; } = new();
+    public bool IsLocalized { get; set; }
+    public string PromptAddendum { get; set; } = "";
+}
+
 // ── Code Graph ──────────────────────────────
 
 public enum CodeNodeKind
@@ -664,6 +677,67 @@ public class CodeGraph
     private static string EscapeMermaid(string text)
     {
         return text.Replace("\"", "#quot;").Replace("<", "&lt;").Replace(">", "&gt;");
+    }
+
+    public string ToCompactSummary()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## Code Structure");
+
+        // Group by namespace → class → members
+        var namespaces = Nodes.Values.Where(n => n.Kind == CodeNodeKind.Namespace).ToList();
+        foreach (var ns in namespaces)
+        {
+            sb.AppendLine($"namespace {ns.Name}");
+            foreach (var type in Children(ns.Id))
+            {
+                var kindLabel = type.Kind switch
+                {
+                    CodeNodeKind.Interface => "interface",
+                    CodeNodeKind.Struct => "struct",
+                    CodeNodeKind.Enum => "enum",
+                    _ => "class",
+                };
+                sb.Append($"  {kindLabel} {type.Name}");
+
+                // Show implements edges
+                var implements = OutgoingEdges(type.Id)
+                    .Where(e => e.Kind == CodeEdgeKind.Implements)
+                    .Select(e => Nodes.TryGetValue(e.TargetId, out var n) ? n.Name : null)
+                    .Where(n => n != null);
+                var implList = implements.ToList();
+                if (implList.Count > 0) sb.Append($" : {string.Join(", ", implList)}");
+                sb.AppendLine();
+
+                // Show methods with signatures
+                foreach (var member in Children(type.Id))
+                {
+                    if (member.Kind is CodeNodeKind.Method or CodeNodeKind.Constructor)
+                    {
+                        var ret = member.Metadata.GetValueOrDefault("returnType", "void");
+                        var parms = member.Metadata.GetValueOrDefault("parameters", "()");
+                        sb.AppendLine($"    .{member.Name}{parms} → {ret}");
+                    }
+                }
+            }
+        }
+
+        // Show cross-cutting edges (Calls, DependsOn)
+        var interClassEdges = Edges
+            .Where(e => e.Kind is CodeEdgeKind.Calls or CodeEdgeKind.DependsOn)
+            .Where(e => Nodes.ContainsKey(e.SourceId) && Nodes.ContainsKey(e.TargetId))
+            .GroupBy(e => (Nodes[e.SourceId].Name, Nodes[e.TargetId].Name))
+            .Take(30);
+
+        var edgeList = interClassEdges.ToList();
+        if (edgeList.Count > 0)
+        {
+            sb.AppendLine("  Dependencies:");
+            foreach (var group in edgeList)
+                sb.AppendLine($"    {group.Key.Item1} → {group.Key.Item2} ({group.First().Kind})");
+        }
+
+        return sb.ToString();
     }
 }
 
@@ -2656,6 +2730,93 @@ public static class Generator
         }
     }
 
+    public static async Task<Dictionary<string, string>> GenerateTargetedFix(
+        SystemState state,
+        TargetedErrorContext errorCtx,
+        string? numberedPreviousSource)
+    {
+        // Pass through all working files unchanged
+        var result = new Dictionary<string, string>();
+        foreach (var file in errorCtx.WorkingFiles)
+        {
+            if (state.Code.TryGetValue(file, out var code))
+                result[file] = code;
+        }
+
+        // Build context showing only the broken files' current code
+        var brokenCodeSb = new StringBuilder();
+        foreach (var file in errorCtx.BrokenFiles)
+        {
+            if (state.Code.TryGetValue(file, out var code))
+                brokenCodeSb.AppendLine($"── Current {file} ──\n{code}\n");
+        }
+
+        var interfacesList = string.Join("\n", state.Interfaces.Select(kv => $"── {kv.Key} ──\n{kv.Value}"));
+        var context = PromptBuilder.BuildFullContext(state);
+
+        var sourceRef = "";
+        if (numberedPreviousSource != null)
+        {
+            sourceRef = $"""
+
+                Full assembled source with line numbers (for error-line reference):
+                {numberedPreviousSource}
+                """;
+        }
+
+        var prompt =
+            $"""
+            {errorCtx.PromptAddendum}
+
+            Full system context:
+            {context}
+
+            These interfaces are defined (do NOT change them):
+            {interfacesList}
+
+            Current BROKEN file code that needs fixing:
+            {brokenCodeSb}
+            {sourceRef}
+
+            Generate ONLY the fixed versions of these files: {string.Join(", ", errorCtx.BrokenFiles)}
+
+            Return a JSON object where each key is a filename (must match the original filenames exactly)
+            and each value is the complete fixed C# code for that file.
+            Do NOT include files that compiled correctly — they are kept as-is.
+            Do NOT include interface definitions.
+            No using statements or namespace wrapper in individual files — the compiler adds those.
+            EXCEPTION: Program.cs SHOULD include using statements and namespace since it's the entry point.
+
+            Output ONLY valid JSON. No markdown fences.
+            """;
+
+        var raw = await OpenAIClient.Complete(BuildCodeGenSystemPrompt(state), prompt + PromptBuilder.BuildTweaks(state, "code"));
+        raw = StripMarkdownFences(raw);
+
+        try
+        {
+            var doc = System.Text.Json.JsonDocument.Parse(raw);
+            foreach (var prop in doc.RootElement.EnumerateObject())
+                result[prop.Name] = prop.Value.GetString() ?? "";
+        }
+        catch
+        {
+            // If JSON parsing fails and there's only one broken file, treat raw as its content
+            if (errorCtx.BrokenFiles.Count == 1)
+            {
+                result[errorCtx.BrokenFiles.First()] = raw;
+            }
+            else
+            {
+                // Total fallback: full regeneration
+                return await GenerateCode(state, numberedPreviousSource,
+                    errorCtx.ErrorsByFile.SelectMany(kv => kv.Value).ToArray(), null);
+            }
+        }
+
+        return result;
+    }
+
     public static async Task<Dictionary<string, string>> GenerateNfrTests(SystemState state)
     {
         var context = PromptBuilder.BuildFullContext(state);
@@ -3438,6 +3599,342 @@ public class SseClient
             return true;
         }
         catch { return false; }
+    }
+}
+
+// ── Agent Tools ─────────────────────────────
+
+public static class AgentTools
+{
+    public const string ToolsPrompt =
+        """
+
+        TOOLS — You have access to tools for scanning and understanding the codebase.
+        To use a tool, include a ```tools ... ``` block in your response with a JSON array of tool calls.
+        You will receive the results and can then continue your response.
+
+        Available tools:
+        - search_code: Full-text search across all code, specs, rules, constraints, tests.
+          {"tool": "search_code", "query": "authentication", "max_results": 10}
+        - vector_search: Semantic similarity search in a specific index.
+          {"tool": "vector_search", "query": "user login flow", "index": "code|comments|specs|patterns|libraries|dependencies|vulnerabilities", "k": 5}
+        - graph_structure: Get the structural summary of the code (classes, methods, relationships).
+          {"tool": "graph_structure"}
+        - graph_lookup: Look up a specific node in the code graph and its connections.
+          {"tool": "graph_lookup", "name": "UserService"}
+        - find_implementations: Find all classes that implement an interface.
+          {"tool": "find_implementations", "interface": "IUserService"}
+        - find_callers: Find what calls a specific method or class.
+          {"tool": "find_callers", "name": "GetById"}
+        - read_file: Read the contents of a generated code file.
+          {"tool": "read_file", "file": "Services/UserService.cs"}
+        - read_tests: Read unit test code for a specific test file.
+          {"tool": "read_tests", "file": "UserServiceTests.cs"}
+
+        Use tools when you need to understand the codebase before making suggestions.
+        You can call multiple tools at once. After receiving results, respond with your analysis and actions.
+        If you don't need tools, just respond normally without a ```tools block.
+        """;
+
+    public static async Task<string> ExecuteTool(Dictionary<string, string> call, LiveSession live)
+    {
+        var tool = call.GetValueOrDefault("tool", "");
+        try
+        {
+            return tool switch
+            {
+                "search_code" => ExecuteSearchCode(call, live),
+                "vector_search" => await ExecuteVectorSearch(call, live),
+                "graph_structure" => ExecuteGraphStructure(live),
+                "graph_lookup" => ExecuteGraphLookup(call, live),
+                "find_implementations" => ExecuteFindImplementations(call, live),
+                "find_callers" => ExecuteFindCallers(call, live),
+                "read_file" => ExecuteReadFile(call, live),
+                "read_tests" => ExecuteReadTests(call, live),
+                _ => $"Unknown tool: {tool}",
+            };
+        }
+        catch (Exception ex)
+        {
+            return $"Tool error ({tool}): {ex.Message}";
+        }
+    }
+
+    private static string ExecuteSearchCode(Dictionary<string, string> call, LiveSession live)
+    {
+        var query = call.GetValueOrDefault("query", "");
+        var maxStr = call.GetValueOrDefault("max_results", "10");
+        int.TryParse(maxStr, out var max); if (max <= 0) max = 10;
+
+        var results = live.Search.Search(query, max);
+        if (results.Count == 0) return $"No results for '{query}'";
+
+        var sb = new StringBuilder();
+        foreach (var r in results)
+            sb.AppendLine($"[{r.Field}] {r.DocId} (score: {r.Score:F2})\n  {r.Snippet}\n");
+        return sb.ToString();
+    }
+
+    private static async Task<string> ExecuteVectorSearch(Dictionary<string, string> call, LiveSession live)
+    {
+        var query = call.GetValueOrDefault("query", "");
+        var indexName = call.GetValueOrDefault("index", "code");
+        var kStr = call.GetValueOrDefault("k", "5");
+        int.TryParse(kStr, out var k); if (k <= 0) k = 5;
+
+        var results = await live.Vectors.SearchByText(indexName, query, k);
+        if (results.Count == 0) return $"No results in '{indexName}' for '{query}'";
+
+        var sb = new StringBuilder();
+        foreach (var r in results)
+        {
+            sb.Append($"[{r.Id}] score={r.Score:F3}");
+            if (r.Metadata.TryGetValue("_content", out var content))
+                sb.Append($"\n  {content}");
+            sb.AppendLine();
+        }
+        return sb.ToString();
+    }
+
+    private static string ExecuteGraphStructure(LiveSession live)
+    {
+        if (live.Graph.Nodes.Count == 0) return "Code graph is empty — no code has been generated yet.";
+        return live.Graph.ToCompactSummary();
+    }
+
+    private static string ExecuteGraphLookup(Dictionary<string, string> call, LiveSession live)
+    {
+        var name = call.GetValueOrDefault("name", "");
+        var node = live.Graph.FindByName(name);
+        if (node == null) return $"Node '{name}' not found in code graph.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"{node.Kind} {node.Name} [{node.Language}] (lines {node.StartLine}-{node.EndLine})");
+        if (node.Metadata.Count > 0)
+            foreach (var (k, v) in node.Metadata) sb.AppendLine($"  {k}: {v}");
+
+        var outEdges = live.Graph.OutgoingEdges(node.Id);
+        var inEdges = live.Graph.IncomingEdges(node.Id);
+
+        if (outEdges.Count > 0)
+        {
+            sb.AppendLine("  Outgoing:");
+            foreach (var e in outEdges.Take(20))
+            {
+                var target = live.Graph.Nodes.GetValueOrDefault(e.TargetId);
+                sb.AppendLine($"    --{e.Kind}--> {target?.Name ?? e.TargetId} ({target?.Kind})");
+            }
+        }
+        if (inEdges.Count > 0)
+        {
+            sb.AppendLine("  Incoming:");
+            foreach (var e in inEdges.Take(20))
+            {
+                var source = live.Graph.Nodes.GetValueOrDefault(e.SourceId);
+                sb.AppendLine($"    <--{e.Kind}-- {source?.Name ?? e.SourceId} ({source?.Kind})");
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string ExecuteFindImplementations(Dictionary<string, string> call, LiveSession live)
+    {
+        var ifaceName = call.GetValueOrDefault("interface", "");
+        var implementing = live.Graph.Edges
+            .Where(e => e.Kind == CodeEdgeKind.Implements)
+            .Where(e =>
+            {
+                var target = live.Graph.Nodes.GetValueOrDefault(e.TargetId);
+                return target != null && target.Name.Equals(ifaceName, StringComparison.OrdinalIgnoreCase);
+            })
+            .Select(e => live.Graph.Nodes.GetValueOrDefault(e.SourceId))
+            .Where(n => n != null)
+            .ToList();
+
+        if (implementing.Count == 0) return $"No implementations found for '{ifaceName}'.";
+
+        var sb = new StringBuilder($"Implementations of {ifaceName}:\n");
+        foreach (var impl in implementing)
+            sb.AppendLine($"  {impl!.Kind} {impl.Name} (lines {impl.StartLine}-{impl.EndLine})");
+        return sb.ToString();
+    }
+
+    private static string ExecuteFindCallers(Dictionary<string, string> call, LiveSession live)
+    {
+        var name = call.GetValueOrDefault("name", "");
+        var callers = live.Graph.Edges
+            .Where(e => e.Kind == CodeEdgeKind.Calls)
+            .Where(e =>
+            {
+                var target = live.Graph.Nodes.GetValueOrDefault(e.TargetId);
+                return target != null && target.Name.Equals(name, StringComparison.OrdinalIgnoreCase);
+            })
+            .Select(e => live.Graph.Nodes.GetValueOrDefault(e.SourceId))
+            .Where(n => n != null)
+            .ToList();
+
+        if (callers.Count == 0) return $"No callers found for '{name}'.";
+
+        var sb = new StringBuilder($"Callers of {name}:\n");
+        foreach (var caller in callers)
+            sb.AppendLine($"  {caller!.Kind} {caller.Name} (lines {caller.StartLine}-{caller.EndLine})");
+        return sb.ToString();
+    }
+
+    private static string ExecuteReadFile(Dictionary<string, string> call, LiveSession live)
+    {
+        var file = call.GetValueOrDefault("file", "");
+        if (live.State.Code.TryGetValue(file, out var code))
+            return $"── {file} ──\n{code}";
+        // Try partial match
+        var match = live.State.Code.FirstOrDefault(kv =>
+            kv.Key.EndsWith(file, StringComparison.OrdinalIgnoreCase) ||
+            kv.Key.Contains(file, StringComparison.OrdinalIgnoreCase));
+        if (match.Key != null)
+            return $"── {match.Key} ──\n{match.Value}";
+        return $"File '{file}' not found. Available: {string.Join(", ", live.State.Code.Keys)}";
+    }
+
+    private static string ExecuteReadTests(Dictionary<string, string> call, LiveSession live)
+    {
+        var file = call.GetValueOrDefault("file", "");
+        if (live.State.UnitTests.TryGetValue(file, out var test))
+            return $"── {file} ──\n{test}";
+        var match = live.State.UnitTests.FirstOrDefault(kv =>
+            kv.Key.EndsWith(file, StringComparison.OrdinalIgnoreCase) ||
+            kv.Key.Contains(file, StringComparison.OrdinalIgnoreCase));
+        if (match.Key != null)
+            return $"── {match.Key} ──\n{match.Value}";
+        return $"Test '{file}' not found. Available: {string.Join(", ", live.State.UnitTests.Keys)}";
+    }
+
+    /// <summary>Execute a multi-turn agent loop with tool calling. Returns (finalResponse, actions).</summary>
+    public static async Task<(string Response, List<ProposedAction>? Actions)> RunAgentLoop(
+        string systemPrompt, string userPrompt, LiveSession live, int maxToolRounds = 3)
+    {
+        var messages = new List<(string role, string content)>
+        {
+            ("system", systemPrompt),
+            ("user", userPrompt),
+        };
+
+        for (int round = 0; round <= maxToolRounds; round++)
+        {
+            // Build message for LLM
+            var combinedSystem = messages[0].content;
+            var combinedUser = new StringBuilder();
+            for (int i = 1; i < messages.Count; i++)
+                combinedUser.AppendLine($"[{messages[i].role}]\n{messages[i].content}\n");
+
+            var response = await OpenAIClient.Complete(combinedSystem, combinedUser.ToString());
+
+            // Check for tool calls
+            var toolsMatch = System.Text.RegularExpressions.Regex.Match(response, @"```tools\s*([\s\S]*?)```");
+            if (!toolsMatch.Success || round >= maxToolRounds)
+            {
+                // No tool calls or max rounds reached — return final response
+                return ParseFinalResponse(response);
+            }
+
+            // Extract conversational part and tool calls
+            var beforeTools = response[..toolsMatch.Index].TrimEnd();
+            var afterTools = response[(toolsMatch.Index + toolsMatch.Length)..].TrimStart();
+
+            // If there's conversational content before tools, broadcast it as a thinking indicator
+            if (!string.IsNullOrWhiteSpace(beforeTools))
+                messages.Add(("assistant", beforeTools));
+
+            // Parse and execute tools
+            try
+            {
+                var toolsJson = toolsMatch.Groups[1].Value.Trim();
+                var toolCalls = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(toolsJson);
+                if (toolCalls == null || toolCalls.Count == 0) return ParseFinalResponse(response);
+
+                var resultsSb = new StringBuilder("Tool results:\n");
+                foreach (var toolCall in toolCalls)
+                {
+                    var toolName = toolCall.GetValueOrDefault("tool", "?");
+                    resultsSb.AppendLine($"── {toolName} ──");
+                    var result = await ExecuteTool(toolCall, live);
+                    resultsSb.AppendLine(result);
+                    resultsSb.AppendLine();
+                }
+
+                messages.Add(("tool_results", resultsSb.ToString()));
+                messages.Add(("user", "Continue your analysis using the tool results above. Provide your final response."));
+            }
+            catch
+            {
+                // Tool parse failed — treat entire response as final
+                return ParseFinalResponse(response);
+            }
+        }
+
+        return ("I was unable to complete the analysis within the tool-call limit.", null);
+    }
+
+    private static (string Response, List<ProposedAction>? Actions) ParseFinalResponse(string response)
+    {
+        List<ProposedAction>? actions = null;
+        var conversational = response;
+
+        var actionsMatch = System.Text.RegularExpressions.Regex.Match(response, @"```actions\s*([\s\S]*?)```");
+        if (actionsMatch.Success)
+        {
+            conversational = response[..actionsMatch.Index].TrimEnd() +
+                response[(actionsMatch.Index + actionsMatch.Length)..].TrimStart();
+            try
+            {
+                var actionsJson = actionsMatch.Groups[1].Value.Trim();
+                var parsed = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(actionsJson);
+                if (parsed != null)
+                {
+                    actions = parsed.Select(a => new ProposedAction
+                    {
+                        Label = a.GetValueOrDefault("label", ""),
+                        Layer = a.GetValueOrDefault("layer", ""),
+                        Op = a.GetValueOrDefault("op", "set"),
+                        Key = a.GetValueOrDefault("key", ""),
+                        Value = a.GetValueOrDefault("value", ""),
+                    }).ToList();
+                }
+            }
+            catch { }
+        }
+
+        // Also strip any leftover tools blocks from final response
+        var toolsMatch = System.Text.RegularExpressions.Regex.Match(conversational, @"```tools\s*[\s\S]*?```");
+        if (toolsMatch.Success)
+            conversational = conversational[..toolsMatch.Index].TrimEnd() +
+                conversational[(toolsMatch.Index + toolsMatch.Length)..].TrimStart();
+
+        return (conversational.Trim(), actions);
+    }
+
+    /// <summary>Pre-search enrichment: find relevant code context for a user message.</summary>
+    public static string BuildSearchContext(string userMessage, LiveSession live)
+    {
+        var sb = new StringBuilder();
+
+        // Full-text search for relevant code/specs
+        var searchResults = live.Search.Search(userMessage, 8);
+        if (searchResults.Count > 0)
+        {
+            sb.AppendLine("── Relevant matches (full-text search) ──");
+            foreach (var r in searchResults.Take(5))
+                sb.AppendLine($"[{r.Field}] {r.DocId}: {r.Snippet}");
+            sb.AppendLine();
+        }
+
+        // Include structural summary if graph exists
+        if (live.Graph.Nodes.Count > 0)
+        {
+            sb.AppendLine(live.Graph.ToCompactSummary());
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
     }
 }
 
@@ -4411,46 +4908,28 @@ public static class PlatinumForgeServer
                         }, new JsonSerializerOptions { WriteIndented = true });
                         var chatHistory = string.Join("\n", live.ChatLog.TakeLast(20).Select(c => $"[{c.Role}] {c.Message}"));
                         var agentSystemPrompt = GetAgentSystemPrompt(agentName);
-                        var response = await OpenAIClient.Complete(
-                            agentSystemPrompt,
+
+                        // Pre-search enrichment: find relevant code context
+                        var searchContext = AgentTools.BuildSearchContext(message, live);
+
+                        var userPrompt =
                             $"""
                             Current project state:
                             {stateJson}
+
+                            {searchContext}
 
                             Recent chat:
                             {chatHistory}
 
                             User says: {message}
-                            """);
+                            """;
 
-                        // Parse response: extract actions block if present
-                        List<ProposedAction>? actions = null;
-                        var conversational = response;
-                        var actionsMatch = System.Text.RegularExpressions.Regex.Match(response, @"```actions\s*([\s\S]*?)```");
-                        if (actionsMatch.Success)
-                        {
-                            conversational = response[..actionsMatch.Index].TrimEnd() +
-                                response[(actionsMatch.Index + actionsMatch.Length)..].TrimStart();
-                            try
-                            {
-                                var actionsJson = actionsMatch.Groups[1].Value.Trim();
-                                var parsed = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(actionsJson);
-                                if (parsed != null)
-                                {
-                                    actions = parsed.Select(a => new ProposedAction
-                                    {
-                                        Label = a.GetValueOrDefault("label", ""),
-                                        Layer = a.GetValueOrDefault("layer", ""),
-                                        Op = a.GetValueOrDefault("op", "set"),
-                                        Key = a.GetValueOrDefault("key", ""),
-                                        Value = a.GetValueOrDefault("value", ""),
-                                    }).ToList();
-                                }
-                            }
-                            catch { /* actions parse failed, just show text */ }
-                        }
+                        // Multi-turn agent loop with tool calling
+                        var (responseText, actions) = await AgentTools.RunAgentLoop(
+                            agentSystemPrompt, userPrompt, live, maxToolRounds: 3);
 
-                        var entry = new ChatEntry { Role = agentName, Message = conversational.Trim(), Actions = actions };
+                        var entry = new ChatEntry { Role = agentName, Message = responseText, Actions = actions };
                         live.ChatLog.Add(entry);
                         _ = live.BroadcastAll("chat", new
                         {
@@ -5847,7 +6326,7 @@ public static class PlatinumForgeServer
             target[prop.Name] = prop.Value.GetString() ?? "";
     }
 
-    private const string AgentActionsPrompt =
+    private static readonly string AgentActionsPrompt =
         """
         You are operating over the METADATA DEFINITIONS of a software project — not the code itself.
         The project state you receive is the full materialised specification that drives code generation.
@@ -5892,7 +6371,7 @@ public static class PlatinumForgeServer
         deploymentModel, features, stories, nfr, acceptanceCriteria, interpretations.
         Your conversational text goes OUTSIDE the actions block. Always explain WHY you suggest each change.
         Reference specific entries from the current state when discussing them.
-        """;
+        """ + AgentTools.ToolsPrompt;
 
     private static string GetAgentSystemPrompt(string agent) => agent switch
     {
@@ -6038,6 +6517,205 @@ public static class PlatinumForgeServer
             """
     };
 
+    // ── Targeted Error Repair ────────────────────
+
+    private static TargetedErrorContext BuildTargetedErrorContext(
+        string fullSource,
+        SystemState state,
+        string[]? compileErrors,
+        List<(string Name, bool Passed, string Msg)>? testResults)
+    {
+        var ctx = new TargetedErrorContext();
+        var allCodeFiles = state.Code.Keys.ToHashSet();
+
+        // Step 1: Build line→file mapping from "// ── Code: {name}" markers
+        var srcLines = fullSource.Split('\n');
+        var lineToFile = new string?[srcLines.Length + 2]; // 1-indexed, extra padding
+        string? currentCodeFile = null;
+        for (int i = 0; i < srcLines.Length; i++)
+        {
+            var trimmed = srcLines[i].TrimStart();
+            if (trimmed.StartsWith("// ── Code: "))
+                currentCodeFile = trimmed["// ── Code: ".Length..].TrimEnd();
+            else if (trimmed.StartsWith("// ── Interface: ") || trimmed.StartsWith("// ── Test Runner"))
+                currentCodeFile = null;
+
+            lineToFile[i + 1] = currentCodeFile;
+        }
+
+        // Step 2: Parse syntax tree for class→file mapping and base types
+        var tree = CSharpSyntaxTree.ParseText(fullSource);
+        var root = tree.GetRoot();
+
+        var classToFile = new Dictionary<string, string>();
+        var fileClasses = new Dictionary<string, List<string>>();
+        var classBaseTypes = new Dictionary<string, List<string>>();
+
+        foreach (var typeDecl in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+        {
+            var className = typeDecl.Identifier.Text;
+            var lineSpan = typeDecl.GetLocation().GetLineSpan();
+            int startLine = lineSpan.StartLinePosition.Line + 1;
+
+            if (startLine > 0 && startLine < lineToFile.Length && lineToFile[startLine] != null)
+            {
+                var file = lineToFile[startLine]!;
+                classToFile[className] = file;
+                if (!fileClasses.TryGetValue(file, out var classList))
+                {
+                    classList = new List<string>();
+                    fileClasses[file] = classList;
+                }
+                classList.Add(className);
+            }
+
+            if (typeDecl.BaseList != null)
+            {
+                classBaseTypes[className] = typeDecl.BaseList.Types
+                    .Select(t => t.Type.ToString().Split('<')[0].Trim())
+                    .ToList();
+            }
+        }
+
+        // Step 3: Map compilation errors to files
+        if (compileErrors != null && compileErrors.Length > 0)
+        {
+            foreach (var err in compileErrors)
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(err, @"\((\d+),\d+\)");
+                if (match.Success && int.TryParse(match.Groups[1].Value, out int errLine) &&
+                    errLine > 0 && errLine < lineToFile.Length && lineToFile[errLine] != null)
+                {
+                    var file = lineToFile[errLine]!;
+                    if (!ctx.ErrorsByFile.TryGetValue(file, out var errList))
+                    {
+                        errList = new List<string>();
+                        ctx.ErrorsByFile[file] = errList;
+                    }
+                    errList.Add(err);
+                    ctx.BrokenFiles.Add(file);
+                }
+            }
+        }
+
+        // Step 4: Map test failures to files when code compiled but tests failed
+        if (testResults != null)
+        {
+            var failures = testResults.Where(t => !t.Passed).ToList();
+            if (failures.Count > 0 && ctx.BrokenFiles.Count == 0)
+            {
+                foreach (var (name, _, msg) in failures)
+                {
+                    foreach (var (className, file) in classToFile)
+                    {
+                        if (name.Contains(className, StringComparison.OrdinalIgnoreCase) ||
+                            msg.Contains(className, StringComparison.OrdinalIgnoreCase))
+                        {
+                            ctx.BrokenFiles.Add(file);
+                            if (!ctx.ErrorsByFile.TryGetValue(file, out var errList))
+                            {
+                                errList = new List<string>();
+                                ctx.ErrorsByFile[file] = errList;
+                            }
+                            errList.Add($"Test '{name}' failed: {msg}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 5: Determine if errors are localized to a subset of files
+        if (ctx.BrokenFiles.Count == 0)
+        {
+            foreach (var f in allCodeFiles)
+                ctx.BrokenFiles.Add(f);
+            ctx.IsLocalized = false;
+        }
+        else
+        {
+            ctx.IsLocalized = ctx.BrokenFiles.Count < allCodeFiles.Count && allCodeFiles.Count > 1;
+        }
+
+        // Step 6: Identify working files
+        foreach (var f in allCodeFiles)
+        {
+            if (!ctx.BrokenFiles.Contains(f))
+                ctx.WorkingFiles.Add(f);
+        }
+
+        // Step 7: Find interfaces implemented by broken-file classes
+        foreach (var brokenFile in ctx.BrokenFiles)
+        {
+            if (!fileClasses.TryGetValue(brokenFile, out var classes)) continue;
+            foreach (var cls in classes)
+            {
+                if (!classBaseTypes.TryGetValue(cls, out var bases)) continue;
+                foreach (var baseName in bases)
+                {
+                    var matchingIface = state.Interfaces.Keys.FirstOrDefault(k =>
+                        k.Replace(".cs", "").Equals(baseName, StringComparison.OrdinalIgnoreCase) ||
+                        k.Equals(baseName + ".cs", StringComparison.OrdinalIgnoreCase) ||
+                        k.Equals($"I{baseName}.cs", StringComparison.OrdinalIgnoreCase));
+                    if (matchingIface != null && !ctx.InterfacesForBroken.ContainsKey(baseName))
+                        ctx.InterfacesForBroken[baseName] = state.Interfaces[matchingIface];
+                }
+            }
+        }
+
+        // Step 8: Find working files that reference classes in broken files
+        foreach (var workingFile in ctx.WorkingFiles)
+        {
+            if (!state.Code.TryGetValue(workingFile, out var wSource)) continue;
+            foreach (var brokenFile in ctx.BrokenFiles)
+            {
+                if (!fileClasses.TryGetValue(brokenFile, out var bClasses)) continue;
+                if (bClasses.Any(bc => wSource.Contains(bc, StringComparison.Ordinal)))
+                {
+                    ctx.ReferencingFiles.Add(workingFile);
+                    break;
+                }
+            }
+        }
+
+        // Step 9: Build focused prompt addendum
+        var sb = new StringBuilder();
+        sb.AppendLine("TARGETED REPAIR — fix ONLY the broken files listed below. Do NOT regenerate files that compiled correctly.");
+        sb.AppendLine();
+
+        foreach (var (file, errors) in ctx.ErrorsByFile)
+        {
+            sb.AppendLine($"📁 BROKEN: {file} ({errors.Count} error(s)):");
+            foreach (var err in errors.Take(15))
+                sb.AppendLine($"  - {err}");
+
+            if (fileClasses.TryGetValue(file, out var fClasses))
+            {
+                foreach (var cls in fClasses)
+                {
+                    if (classBaseTypes.TryGetValue(cls, out var bases) && bases.Count > 0)
+                        sb.AppendLine($"  Class '{cls}' implements: {string.Join(", ", bases)}");
+                }
+            }
+        }
+
+        if (ctx.ReferencingFiles.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"Working files that reference broken classes (keep their contracts stable): {string.Join(", ", ctx.ReferencingFiles)}");
+        }
+
+        if (ctx.InterfacesForBroken.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Interface contracts that broken files MUST satisfy:");
+            foreach (var (name, code) in ctx.InterfacesForBroken)
+                sb.AppendLine($"  {name}:\n{code}");
+        }
+
+        ctx.PromptAddendum = sb.ToString();
+        return ctx;
+    }
+
     private static async Task<bool> RunRetryLoop(LiveSession live)
     {
         const int maxAttempts = 5;
@@ -6068,8 +6746,26 @@ public static class PlatinumForgeServer
                     await BroadcastChat(live, "system", "⏳ Regenerating Interfaces...");
                     proposed.Interfaces = await Generator.GenerateInterfaces(proposed);
                 }
-                await BroadcastChat(live, "system", "⏳ Regenerating Code...");
-                proposed.Code = await Generator.GenerateCode(proposed, numberedPrev, lastErrors, lastTestResults);
+
+                // Try graph-aware targeted repair when errors are localized to specific files
+                bool usedTargetedRepair = false;
+                if (regenFromLayer >= 6 && lastFullSource != null && proposed.Code.Count > 1)
+                {
+                    var errorCtx = BuildTargetedErrorContext(lastFullSource, proposed, lastErrors, lastTestResults);
+                    if (errorCtx.IsLocalized)
+                    {
+                        await BroadcastChat(live, "system",
+                            $"🔍 Targeted repair: {errorCtx.BrokenFiles.Count}/{proposed.Code.Count} file(s) need fixing");
+                        proposed.Code = await Generator.GenerateTargetedFix(proposed, errorCtx, numberedPrev);
+                        usedTargetedRepair = true;
+                    }
+                }
+
+                if (!usedTargetedRepair)
+                {
+                    await BroadcastChat(live, "system", "⏳ Regenerating Code...");
+                    proposed.Code = await Generator.GenerateCode(proposed, numberedPrev, lastErrors, lastTestResults);
+                }
             }
 
             var fullSource = CodeCompiler.BuildFullSource(proposed);
